@@ -216,12 +216,11 @@ def segment_markup(title: str, segment: dict[str, Any]) -> str:
 def render_itinerary(flight: dict[str, Any]) -> None:
     outbound = flight.get("outbound") or {}
     returning = flight.get("return") or {}
-    st.markdown(
+    st.html(
         '<div class="fh-itinerary-grid">'
         + segment_markup("Ida", outbound)
         + segment_markup("Volta", returning)
         + "</div>",
-        unsafe_allow_html=True,
     )
     st.markdown(
         '<p class="fh-confirm-note">Horários exibidos no fuso local de cada aeroporto, conforme retornados pela fonte.</p>',
