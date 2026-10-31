@@ -25,6 +25,7 @@ from flight_hunter.core import (
 )
 from flight_hunter.search import cheapest_specific_flight, search_calendar, search_specific_flights
 from flight_hunter.theme import APP_CSS
+from flight_hunter.timeline import SegmentTimeline, build_segment_timeline
 
 
 st.set_page_config(
@@ -142,6 +143,130 @@ def render_step(number: int, title: str, description: str) -> None:
     )
 
 
+def percent(value: float) -> str:
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def proportional_timeline_markup(
+    timeline: SegmentTimeline,
+    departure_time: str,
+    arrival_time: str,
+    departure_airport: str,
+    arrival_airport: str,
+    departure_date: str,
+    arrival_date: str,
+) -> str:
+    time_labels = (
+        '<div class="fh-timeline-times">'
+        f'<span class="fh-time">{escape(departure_time)}</span>'
+        f'<span class="fh-time">{escape(arrival_time)}</span>'
+        "</div>"
+    )
+    airport_labels = (
+        '<div class="fh-airports">'
+        f"<span>{escape(departure_airport)} · {escape(departure_date)}</span>"
+        f"<span>{escape(arrival_airport)} · {escape(arrival_date)}</span>"
+        "</div>"
+    )
+
+    if not timeline.precise:
+        reason = timeline.unavailable_reason or "Os dados necessários não foram informados."
+        return (
+            '<div class="fh-proportional-timeline fh-timeline-fallback" '
+            f'role="img" aria-label="Trajeto de {escape(departure_airport)} a {escape(arrival_airport)}. '
+            'Proporção precisa indisponível.">'
+            + time_labels
+            + '<div class="fh-fallback-rail"><span></span></div>'
+            + airport_labels
+            + "</div>"
+            + '<div class="fh-timeline-notice"><strong>Proporção precisa indisponível.</strong> '
+            + escape(reason)
+            + "</div>"
+        )
+
+    flight_parts: list[str] = []
+    for flight in timeline.flights:
+        left = percent(flight.start_percent)
+        width = percent(flight.end_percent - flight.start_percent)
+        label = (
+            f"Voo {flight.departure_airport} para {flight.arrival_airport}, "
+            f"{format_minutes(flight.duration_minutes)}"
+        )
+        flight_parts.append(
+            '<span class="fh-timeline-part fh-timeline-flight" '
+            f'style="left:{left}%;width:{width}%" title="{escape(label)}"></span>'
+        )
+
+    connection_parts: list[str] = []
+    connection_details: list[str] = []
+    for connection in timeline.connections:
+        left = percent(connection.arrival_percent)
+        width = percent(connection.departure_percent - connection.arrival_percent)
+        midpoint = percent(connection.midpoint_percent)
+        duration = format_minutes(connection.duration_minutes)
+        connection_label_text = f"Conexão em {connection.airport}, {duration}"
+        connection_parts.extend(
+            [
+                '<span class="fh-timeline-part fh-timeline-layover" '
+                f'style="left:{left}%;width:{width}%" title="{escape(connection_label_text)}"></span>',
+                '<span class="fh-timeline-marker fh-marker-arrival" '
+                f'style="left:{left}%" title="Chegada a {escape(connection.airport)} às '
+                f'{escape(format_time(connection.arrival_time))}"></span>',
+                '<span class="fh-timeline-marker fh-marker-departure" '
+                f'style="left:{percent(connection.departure_percent)}%" title="Saída de '
+                f'{escape(connection.airport)} às {escape(format_time(connection.departure_time))}"></span>',
+                '<span class="fh-timeline-connection-label" '
+                f'style="left:{midpoint}%">{escape(connection.airport)}</span>',
+            ]
+        )
+
+        warnings: list[str] = []
+        if connection.overnight:
+            warnings.append('<span class="fh-warning">Pernoite</span>')
+        if connection.change_of_airport:
+            warnings.append('<span class="fh-warning">Troca de aeroporto</span>')
+        warning_markup = f'<div class="fh-connection-warnings">{"".join(warnings)}</div>' if warnings else ""
+        connection_details.append(
+            '<div class="fh-connection-detail">'
+            f'<strong>{escape(connection.airport)} · {escape(duration)}</strong>'
+            '<span class="fh-connection-times">'
+            f'Chegada {escape(format_time(connection.arrival_time))} · '
+            f'Saída {escape(format_time(connection.departure_time))}'
+            "</span>"
+            f"{warning_markup}</div>"
+        )
+
+    connection_word = "conexão" if len(timeline.connections) == 1 else "conexões"
+    aria_label = (
+        f"Linha do tempo de {departure_airport} a {arrival_airport}, "
+        f"{format_minutes(timeline.total_minutes)}, {len(timeline.connections)} {connection_word}."
+    )
+    connection_panel = (
+        f'<div class="fh-connection-list">{"".join(connection_details)}</div>'
+        if connection_details
+        else ""
+    )
+
+    return (
+        '<div class="fh-proportional-timeline" role="img" '
+        f'aria-label="{escape(aria_label)}">'
+        + time_labels
+        + '<div class="fh-timeline-rail">'
+        + "".join(flight_parts)
+        + "".join(connection_parts)
+        + '<span class="fh-timeline-endpoint fh-endpoint-start"></span>'
+        + '<span class="fh-timeline-endpoint fh-endpoint-end"></span>'
+        + "</div>"
+        + airport_labels
+        + '<div class="fh-timeline-legend" aria-hidden="true">'
+        + '<span><i class="fh-legend-flight"></i>Voo</span>'
+        + '<span><i class="fh-legend-layover"></i>Conexão</span>'
+        + "</div>"
+        + connection_panel
+        + "</div>"
+    )
+
+
 def segment_markup(title: str, segment: dict[str, Any]) -> str:
     legs = segment.get("legs") or []
     if not legs:
@@ -159,6 +284,16 @@ def segment_markup(title: str, segment: dict[str, Any]) -> str:
     departure_airport = airport_code(first_leg.get("departure_airport"))
     arrival_airport = airport_code(last_leg.get("arrival_airport"))
     airlines = " + ".join(segment_airlines(segment)) or "Companhia não informada"
+    timeline = build_segment_timeline(segment)
+    timeline_markup = proportional_timeline_markup(
+        timeline,
+        departure_time,
+        arrival_time,
+        departure_airport,
+        arrival_airport,
+        departure_date,
+        arrival_date,
+    )
 
     details: list[str] = []
     layovers = segment.get("layovers") or []
@@ -196,17 +331,9 @@ def segment_markup(title: str, segment: dict[str, Any]) -> str:
                 <strong>{escape(title)}</strong>
                 <span>{escape(airlines)}</span>
             </div>
-            <div class="fh-time-row">
-                <span class="fh-time">{escape(departure_time)}</span>
-                <span class="fh-flight-line"></span>
-                <span class="fh-time">{escape(arrival_time)}</span>
-            </div>
-            <div class="fh-airports">
-                <span>{escape(departure_airport)} · {escape(departure_date)}</span>
-                <span>{escape(arrival_airport)} · {escape(arrival_date)}</span>
-            </div>
+            {timeline_markup}
             <div class="fh-segment-meta">
-                {escape(format_minutes(segment.get('duration')))} · {escape(connection_label(segment))}
+                {escape(format_minutes(timeline.total_minutes or segment.get('duration')))} · {escape(connection_label(segment))}
             </div>
             <div class="fh-leg-list">{''.join(details)}</div>
         </div>
