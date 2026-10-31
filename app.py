@@ -32,14 +32,16 @@ with st.form("search"):
     with c:
         window = st.slider("Pesquisar quantos dias de saída?", min_value=3, max_value=14, value=7)
         selected = st.multiselect("Destinos", list(DESTINATIONS), default=list(DESTINATIONS)[:5], max_selections=8)
+        stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"])
+        layover_limit = st.selectbox("Tempo máximo de escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"])
     submitted = st.form_submit_button("🔎 Encontrar passagens", type="primary", use_container_width=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def search(origin, destination, start_str, last_str, duration):
+def search(origin, destination, start_str, last_str, duration, stop_code):
     cmd = [
         "fli", "dates", origin, destination,
         "--from", start_str, "--to", last_str,
-        "--duration", str(duration), "--round", "--sort", "--format", "json",
+        "--duration", str(duration), "--round", "--sort", "--format", "json", "--stops", stop_code,
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
@@ -58,12 +60,71 @@ def search(origin, destination, start_str, last_str, duration):
     except (ValueError, OSError) as err:
         return None, str(err)
 
+
+def pretty_time(raw):
+    if not raw:
+        return "Horário indisponível"
+    try:
+        return __import__("datetime").datetime.fromisoformat(raw).strftime("%d/%m %H:%M")
+    except (ValueError, TypeError):
+        return str(raw)
+
+def pretty_minutes(raw):
+    if not isinstance(raw, (int, float)):
+        return "Não informado"
+    raw = int(raw)
+    return f"{raw // 60}h {raw % 60:02d}min"
+
+def airport_code(obj):
+    if isinstance(obj, dict):
+        return str(obj.get("code") or obj.get("iata_code") or obj.get("name") or "?")
+    return str(obj or "?")
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def detailed_search(origin, destination, departure, returning, stop_code, layover_limit):
+    command = [
+        "fli", "flights", origin, destination, departure,
+        "--return", returning, "--stops", stop_code,
+        "--sort", "CHEAPEST", "--format", "json",
+    ]
+    if layover_limit != "Sem limite":
+        command += ["--max-layover", str(int(layover_limit.split()[0]) * 60)]
+    try:
+        response = subprocess.run(command, text=True, capture_output=True, timeout=150)
+        if response.returncode != 0:
+            return [], (response.stderr or response.stdout or "Falha na consulta")[-400:]
+        data = json.loads(response.stdout)
+        return data.get("flights", []), None
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        return [], str(error)
+
+def display_segment(name, segment):
+    st.markdown(f"**{name}**")
+    legs = segment.get("legs") or []
+    if not legs:
+        st.caption("Horários indisponíveis.")
+        return
+    layovers = segment.get("layovers") or []
+    for index, leg in enumerate(legs):
+        departure = airport_code(leg.get("departure_airport"))
+        arrival = airport_code(leg.get("arrival_airport"))
+        st.write(f"✈️ {departure} {pretty_time(leg.get('departure_time'))} → {arrival} {pretty_time(leg.get('arrival_time'))}")
+        st.caption(f"Voo {leg.get('flight_number', '')} • Duração {pretty_minutes(leg.get('duration'))}")
+        if index < len(legs) - 1:
+            if index < len(layovers):
+                layover = layovers[index]
+                st.info(f"Conexão em {airport_code(layover.get('airport'))} • {pretty_minutes(layover.get('duration'))}" + (" • Pernoite" if layover.get("overnight") else "") + (" • Troca de aeroporto" if layover.get("change_of_airport") else ""))
+            else:
+                st.info("Conexão com duração não informada")
+    st.caption(f"Total: {pretty_minutes(segment.get('duration'))}. Horários locais conforme retornados pela fonte.")
+
 if submitted:
     origin = ORIGINS[origin_name]
     selected = [city for city in selected if DESTINATIONS[city] != origin]
     if not selected:
         st.warning("Selecione pelo menos um destino diferente da origem.")
     else:
+        stop_code = {"Qualquer voo": "ANY", "Somente direto": "0", "Até 1 escala": "1"}[stop_filter]
         first_day = start.isoformat()
         last_day = (start + timedelta(days=window - 1)).isoformat()
         status = st.empty()
@@ -72,7 +133,7 @@ if submitted:
         for i, city in enumerate(selected, start=1):
             status.write(f"Pesquisando {city} ({i} de {len(selected)})...")
             item, error = search(
-                origin, DESTINATIONS[city], first_day, last_day, trip_duration
+                origin, DESTINATIONS[city], first_day, last_day, trip_duration, stop_code
             )
             if error:
                 errors.append((city, error))
@@ -98,6 +159,26 @@ if submitted:
                     middle.metric("Ida e volta", f"${r['Preço USD']:,.0f}")
                     if r["Link"].startswith("https://www.google.com/travel/flights"):
                         right.link_button("Conferir preço", r["Link"])
+                    with st.expander("Horários e conexões"):
+                        st.caption("Clique para consultar detalhes do itinerário; o preço pode variar em relação ao calendário.")
+                        if st.button("Carregar horários e escalas", key=f"detail_{origin}_{r['Destino']}_{r['Ida']}"):
+                            with st.spinner("Consultando voos detalhados..."):
+                                flights, error = detailed_search(origin, DESTINATIONS[r["Destino"]], r["Ida"], r["Volta"], stop_code, layover_limit)
+                            if error:
+                                st.error(error)
+                            else:
+                                eligible = sorted([f for f in flights if isinstance(f.get("price"), (int, float)) and f["price"] <= budget], key=lambda f: f["price"])
+                                if not eligible:
+                                    st.warning("Nenhum itinerário detalhado dentro do orçamento e filtros selecionados. Confira no Google Flights.")
+                                for f in eligible[:3]:
+                                    st.markdown(f"### USD {f['price']:,.0f}")
+                                    st.caption(f"Total de escalas (ida e volta): {f.get('stops', 'não informado')}")
+                                    display_segment("Ida", f.get("outbound") or {})
+                                    display_segment("Volta", f.get("return") or {})
+                                    url = f.get("booking_url", "")
+                                    if url.startswith("https://www.google.com/travel/flights"):
+                                        st.link_button("Conferir itinerário", url)
+                                    st.divider()
         else:
             st.warning("Nenhuma tarifa consultada ficou dentro do orçamento. Tente outras datas ou destinos.")
         if results:
@@ -112,7 +193,7 @@ if submitted:
             with st.expander(f"Consultas sem resultado ({len(errors)})"):
                 for city, err in errors:
                     st.write(f"**{city}:** {err}")
-        st.caption("Preços indicativos do Google Flights via FLI. Verifique bagagem, disponibilidade e preço final.")
+        st.caption("O filtro de escalas é aplicado ao calendário. O limite de tempo de conexão é aplicado somente na busca detalhada. Horários locais. Confira bagagem, disponibilidade e tarifa final no Google Flights.")
 
 st.divider()
 st.caption("Protótipo familiar. A coleta pode falhar em servidores compartilhados devido a mudanças ou restrições do Google.")
