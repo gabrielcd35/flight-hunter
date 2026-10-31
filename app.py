@@ -220,34 +220,40 @@ if submitted or st.session_state.get("last_search"):
         st.warning("Selecione pelo menos um destino diferente da origem.")
     else:
         stop_code = {"Qualquer voo": "ANY", "Somente direto": "0", "Até 1 escala": "1"}[stop_filter]
-        first_day = start.isoformat()
-        flexible = date_mode == "Datas flexíveis"
-        last_day = (start + timedelta(days=(window - 1 if flexible else 0))).isoformat()
-        invalid_return = returning is not None and returning <= start
+        def date_options(base, enabled, direction, days):
+            offsets = [0]
+            if enabled and direction in ("Antes e depois", "Somente antes"):
+                offsets += list(range(-days, 0))
+            if enabled and direction in ("Antes e depois", "Somente depois"):
+                offsets += list(range(1, days + 1))
+            return sorted({base + timedelta(days=n) for n in offsets if base + timedelta(days=n) >= date.today()})
+        departures = date_options(start, departure_flexible, outbound_direction, outbound_days)
+        returns = date_options(returning, return_flexible, inbound_direction, inbound_days) if returning else []
+        pairs = [(d, r) for d in departures for r in returns if r > d]
+        invalid_return = bool(returning and not pairs)
+        calls = len(destinations_for_search) * (len(pairs) if returning else 1)
+        skip_search = invalid_return or calls > 40
         if invalid_return:
-            st.error("A data de volta precisa ser posterior à primeira data de ida.")
-        if returning is not None and flexible:
-            st.info("Com volta fixa e ida flexível, cada data de partida exige uma consulta individual. A busca pode ser mais demorada.")
+            st.error("A volta precisa ser posterior à ida.")
+        elif submitted and calls > 40:
+            st.error(f"Essa pesquisa exigiria {calls} consultas. Reduza a flexibilidade ou o número de destinos (limite de 40).")
         status = st.empty()
         progress = st.progress(0)
         results, errors = [], []
-        for i, city in enumerate(destinations_for_search if submitted and not invalid_return else [], start=1):
+        for i, city in enumerate(destinations_for_search if submitted and not skip_search else [], start=1):
             status.write(f"Pesquisando {city} ({i} de {len(destinations_for_search)})...")
-            if returning is not None and flexible:
-                possibilities, failure_notes = [], []
-                for offset in range(window):
-                    dep = start + timedelta(days=offset)
-                    if dep >= returning:
-                        continue
-                    option, issue = search(origin, destinations_for_search[city], dep.isoformat(), dep.isoformat(), None, stop_code, returning.isoformat())
-                    if option:
-                        possibilities.append(option)
-                    elif issue:
-                        failure_notes.append(issue)
-                item = min(possibilities, key=lambda x: x["price"]) if possibilities else None
-                error = None if item else (failure_notes[0] if failure_notes else "Sem voos para essas datas.")
+            if returning:
+                options, failures = [], []
+                for dep, ret in pairs:
+                    choice, failure = search(origin, destinations_for_search[city], dep.isoformat(), dep.isoformat(), None, stop_code, ret.isoformat())
+                    if choice:
+                        options.append(choice)
+                    elif failure:
+                        failures.append(failure)
+                item = min(options, key=lambda x: x["price"]) if options else None
+                error = None if item else (failures[0] if failures else "Nenhum voo encontrado.")
             else:
-                item, error = search(origin, destinations_for_search[city], first_day, last_day, trip_duration, stop_code, returning.isoformat() if returning else None)
+                item, error = search(origin, destinations_for_search[city], departures[0].isoformat(), departures[-1].isoformat(), trip_duration, stop_code)
             if error:
                 errors.append((city, error))
             else:
@@ -261,7 +267,7 @@ if submitted or st.session_state.get("last_search"):
                 })
             progress.progress(i / len(destinations_for_search))
         status.empty()
-        if submitted and not invalid_return:
+        if submitted and not skip_search:
             st.session_state["last_search"] = {"results": results, "errors": errors, "origin": origin, "budget": budget, "stop_code": stop_code, "layover": ("Sem limite" if stop_code == "0" else layover_limit)}
             st.session_state["details"] = {}
         saved = st.session_state.get("last_search")
