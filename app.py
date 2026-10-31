@@ -30,7 +30,7 @@ with st.form("search"):
         start = st.date_input("Primeira data de ida (MM/DD/YYYY)", value=date.today() + timedelta(days=20), min_value=date.today(), format="MM/DD/YYYY")
         trip_duration = st.number_input("Duração da viagem (dias)", min_value=1, max_value=30, value=3)
     with c:
-        window = st.slider("Pesquisar quantos dias de saída?", min_value=3, max_value=14, value=7)
+        window = st.slider("Flexibilidade da data de partida (dias)", min_value=3, max_value=14, value=7, help="Quantos dias consecutivos o Flight Hunter deve pesquisar, começando na Primeira data de ida. Exemplo: se escolher 11/15/2026 e 7 dias, ele pesquisa saídas de 11/15 até 11/21. A duração da viagem determina a data de volta para cada saída.")
         selected = st.multiselect("Destinos", list(DESTINATIONS), default=list(DESTINATIONS)[:5], max_selections=8)
         stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"])
         layover_limit = st.selectbox("Tempo máximo de escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"])
