@@ -81,6 +81,8 @@ ORIGIN_OPTIONS = {
     **AIRPORTS,
 }
 st.info("Escolha uma cidade para incluir os aeroportos apresentados entre parênteses, ou escolha um aeroporto específico. A busca por cidade compara os aeroportos disponíveis, quando compatíveis com o motor.")
+departure_flexible = st.checkbox("Flexibilidade na ida", help="Ative para pesquisar antes e/ou depois da data escolhida.")
+return_flexible = st.checkbox("Flexibilidade na volta", help="Ative para pesquisar antes e/ou depois da data de volta.")
 stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"], help="Selecione Somente direto para ocultar opções de conexão.")
 with st.form("search"):
     a, b, c = st.columns(3)
@@ -88,7 +90,6 @@ with st.form("search"):
         origin_name = st.selectbox("Saindo de (cidade ou aeroporto)", list(ORIGIN_OPTIONS), help="Escolha Cidade para incluir todos os aeroportos listados; ou Aeroporto para escolher somente um. Digite o nome para localizar.")
         budget = st.number_input("Orçamento máximo (USD)", min_value=20, max_value=20000, value=500, step=25)
     with b:
-        date_mode = st.selectbox("Como escolher a ida?", ["Data exata (inclusive hoje)", "Datas flexíveis"], help="Data exata pesquisa apenas a data escolhida. Datas flexíveis compara vários dias de partida.")
         start = st.date_input("Data de ida (MM/DD/YYYY)", value=date.today(), min_value=date.today(), format="MM/DD/YYYY")
         return_mode = st.radio("Como escolher a volta?", ["Data de volta", "Duração da viagem"], horizontal=True, help="Escolha a data exata de volta ou use duração fixa para encontrar preços flexíveis.")
         if return_mode == "Data de volta":
@@ -98,7 +99,16 @@ with st.form("search"):
             trip_duration = st.number_input("Duração da viagem (dias)", min_value=1, max_value=30, value=3)
             returning = None
     with c:
-        window = st.slider("Flexibilidade da data de partida (dias)", min_value=1, max_value=14, value=7, disabled=(date_mode == "Data exata (inclusive hoje)"), help="Com Data exata, a pesquisa considera somente o dia escolhido. Com Datas flexíveis, escolhe quantos dias consecutivos pesquisar a partir da data de ida.")
+        if departure_flexible:
+            outbound_direction = st.selectbox("Direção da flexibilidade da ida", ["Antes e depois", "Somente antes", "Somente depois"])
+            outbound_days = st.slider("Dias de flexibilidade da ida", 1, 5, 2)
+        else:
+            outbound_direction, outbound_days = "Somente depois", 0
+        if return_flexible and return_mode == "Data de volta":
+            inbound_direction = st.selectbox("Direção da flexibilidade da volta", ["Antes e depois", "Somente antes", "Somente depois"])
+            inbound_days = st.slider("Dias de flexibilidade da volta", 1, 5, 2)
+        else:
+            inbound_direction, inbound_days = "Somente depois", 0
         selected = st.multiselect("Destinos (cidade ou aeroporto)", list(AIRPORTS), default=[f"Aeroporto: {name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Digite uma cidade e escolha Cidade para incluir os aeroportos indicados. Escolha Aeroporto para selecionar apenas um.")
         if stop_filter != "Somente direto":
             layover_limit = st.selectbox("Tempo máximo de escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"], help="Este filtro é aplicado na busca detalhada dos voos.")
