@@ -27,7 +27,7 @@ with st.form("search"):
         origin_name = st.selectbox("Saindo de", list(ORIGINS))
         budget = st.number_input("Orçamento máximo (USD)", min_value=20, max_value=20000, value=500, step=25)
     with b:
-        start = st.date_input("Primeira data de ida", value=date.today() + timedelta(days=20), min_value=date.today())
+        start = st.date_input("Primeira data de ida (MM/DD/YYYY)", value=date.today() + timedelta(days=20), min_value=date.today(), format="MM/DD/YYYY")
         trip_duration = st.number_input("Duração da viagem (dias)", min_value=1, max_value=30, value=3)
     with c:
         window = st.slider("Pesquisar quantos dias de saída?", min_value=3, max_value=14, value=7)
@@ -65,7 +65,7 @@ def pretty_time(raw):
     if not raw:
         return "Horário indisponível"
     try:
-        return __import__("datetime").datetime.fromisoformat(raw).strftime("%d/%m %H:%M")
+        return __import__("datetime").datetime.fromisoformat(raw).strftime("%m/%d %I:%M %p")
     except (ValueError, TypeError):
         return str(raw)
 
@@ -118,10 +118,10 @@ def display_segment(name, segment):
                 st.info("Conexão com duração não informada")
     st.caption(f"Total: {pretty_minutes(segment.get('duration'))}. Horários locais conforme retornados pela fonte.")
 
-if submitted:
+if submitted or st.session_state.get("last_search"):
     origin = ORIGINS[origin_name]
     selected = [city for city in selected if DESTINATIONS[city] != origin]
-    if not selected:
+    if not selected and submitted:
         st.warning("Selecione pelo menos um destino diferente da origem.")
     else:
         stop_code = {"Qualquer voo": "ANY", "Somente direto": "0", "Até 1 escala": "1"}[stop_filter]
@@ -130,7 +130,7 @@ if submitted:
         status = st.empty()
         progress = st.progress(0)
         results, errors = [], []
-        for i, city in enumerate(selected, start=1):
+        for i, city in enumerate(selected if submitted else [], start=1):
             status.write(f"Pesquisando {city} ({i} de {len(selected)})...")
             item, error = search(
                 origin, DESTINATIONS[city], first_day, last_day, trip_duration, stop_code
@@ -147,6 +147,12 @@ if submitted:
                 })
             progress.progress(i / len(selected))
         status.empty()
+        if submitted:
+            st.session_state["last_search"] = {"results": results, "errors": errors, "origin": origin, "budget": budget, "stop_code": stop_code, "layover": layover_limit}
+            st.session_state["details"] = {}
+        saved = st.session_state["last_search"]
+        results, errors = saved["results"], saved["errors"]
+        origin, budget, stop_code, layover_limit = saved["origin"], saved["budget"], saved["stop_code"], saved["layover"]
         results.sort(key=lambda x: x["Preço USD"])
         affordable = [x for x in results if x["Preço USD"] <= budget]
         st.subheader(f"{len(affordable)} opções até ${budget:,.0f}")
@@ -159,11 +165,14 @@ if submitted:
                     middle.metric("Ida e volta", f"${r['Preço USD']:,.0f}")
                     if r["Link"].startswith("https://www.google.com/travel/flights"):
                         right.link_button("Conferir preço", r["Link"])
-                    with st.expander("Horários e conexões"):
+                    with st.expander("🕒 Horários de saída, chegada e conexões", expanded=True):
                         st.caption("Clique para consultar detalhes do itinerário; o preço pode variar em relação ao calendário.")
-                        if st.button("Carregar horários e escalas", key=f"detail_{origin}_{r['Destino']}_{r['Ida']}"):
+                        detail_key = f"detail_{origin}_{r['Destino']}_{r['Ida']}"
+                        if st.button("Carregar horários e escalas", key=detail_key):
                             with st.spinner("Consultando voos detalhados..."):
-                                flights, error = detailed_search(origin, DESTINATIONS[r["Destino"]], r["Ida"], r["Volta"], stop_code, layover_limit)
+                                st.session_state["details"][detail_key] = detailed_search(origin, DESTINATIONS[r["Destino"]], r["Ida"], r["Volta"], stop_code, layover_limit)
+                        if detail_key in st.session_state.get("details", {}):
+                            flights, error = st.session_state["details"][detail_key]
                             if error:
                                 st.error(error)
                             else:
