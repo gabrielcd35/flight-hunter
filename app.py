@@ -80,42 +80,51 @@ ORIGIN_OPTIONS = {
         if label.startswith(f"Cidade: {name} (")), code) for name, code in ORIGINS.items()},
     **AIRPORTS,
 }
-st.info("Escolha uma cidade para incluir os aeroportos apresentados entre parênteses, ou escolha um aeroporto específico. A busca por cidade compara os aeroportos disponíveis, quando compatíveis com o motor.")
-departure_flexible = st.checkbox("Flexibilidade na ida", help="Ative para pesquisar antes e/ou depois da data escolhida.")
-return_mode = st.radio("Como escolher a volta?", ["Data de volta", "Duração da viagem"], horizontal=True)
-return_flexible = st.checkbox("Flexibilidade na volta", help="Ative para pesquisar antes e/ou depois da data escolhida.") if return_mode == "Data de volta" else False
-stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"], help="Selecione Somente direto para ocultar opções de conexão.")
-with st.form("search"):
-    a, b, c = st.columns(3)
-    with a:
-        origin_name = st.selectbox("Saindo de (cidade ou aeroporto)", list(ORIGIN_OPTIONS), help="Escolha Cidade para incluir todos os aeroportos listados; ou Aeroporto para escolher somente um. Digite o nome para localizar.")
-        budget = st.number_input("Orçamento máximo (USD)", min_value=20, max_value=20000, value=500, step=25)
-    with b:
-        start = st.date_input("Data de ida (MM/DD/YYYY)", value=date.today(), min_value=date.today(), format="MM/DD/YYYY")
-        if return_mode == "Data de volta":
-            returning = st.date_input("Data de volta (MM/DD/YYYY)", value=date.today() + timedelta(days=3), min_value=date.today(), format="MM/DD/YYYY")
-            trip_duration = None
-        else:
-            trip_duration = st.number_input("Duração da viagem (dias)", min_value=1, max_value=30, value=3)
-            returning = None
-    with c:
-        if departure_flexible:
-            outbound_direction = st.selectbox("Direção da flexibilidade da ida", ["Antes e depois", "Somente antes", "Somente depois"])
-            outbound_days = st.slider("Dias de flexibilidade da ida", 1, 5, 2)
-        else:
-            outbound_direction, outbound_days = "Somente depois", 0
-        if return_flexible and return_mode == "Data de volta":
-            inbound_direction = st.selectbox("Direção da flexibilidade da volta", ["Antes e depois", "Somente antes", "Somente depois"])
+st.caption("Escolha a viagem em sequência. As opções extras aparecem apenas quando você ativar.")
+st.subheader("1. Para onde vamos?")
+origin_name = st.selectbox("Origem: cidade ou aeroporto", list(ORIGIN_OPTIONS), help="Selecione Cidade para incluir os aeroportos indicados, ou escolha um aeroporto específico.")
+selected = st.multiselect("Destino: cidade ou aeroporto", list(AIRPORTS), default=[f"Aeroporto: {name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Escolha até oito destinos. Digite a cidade para encontrar aeroportos.")
+st.subheader("2. Quando você quer sair?")
+start = st.date_input("Data de ida (MM/DD/YYYY)", value=date.today(), min_value=date.today(), format="MM/DD/YYYY")
+departure_flexible = st.checkbox("Quero flexibilidade na ida", help="Permite pesquisar dias antes ou depois da data escolhida.")
+if departure_flexible:
+    col_ida_dir, col_ida_dias = st.columns(2)
+    with col_ida_dir:
+        outbound_direction = st.selectbox("Procurar datas de ida", ["Antes e depois", "Somente antes", "Somente depois"])
+    with col_ida_dias:
+        outbound_days = st.slider("Dias de flexibilidade da ida", 1, 5, 2)
+else:
+    outbound_direction, outbound_days = "Somente depois", 0
+st.subheader("3. Quando você quer voltar?")
+return_mode = st.radio("Definir volta por", ["Data de volta", "Duração da viagem"], horizontal=True)
+if return_mode == "Data de volta":
+    returning = st.date_input("Data de volta (MM/DD/YYYY)", value=date.today() + timedelta(days=3), min_value=date.today(), format="MM/DD/YYYY")
+    trip_duration = None
+    return_flexible = st.checkbox("Quero flexibilidade na volta", help="Permite pesquisar dias antes ou depois da data de volta.")
+    if return_flexible:
+        col_volta_dir, col_volta_dias = st.columns(2)
+        with col_volta_dir:
+            inbound_direction = st.selectbox("Procurar datas de volta", ["Antes e depois", "Somente antes", "Somente depois"])
+        with col_volta_dias:
             inbound_days = st.slider("Dias de flexibilidade da volta", 1, 5, 2)
-        else:
-            inbound_direction, inbound_days = "Somente depois", 0
-        selected = st.multiselect("Destinos (cidade ou aeroporto)", list(AIRPORTS), default=[f"Aeroporto: {name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Digite uma cidade e escolha Cidade para incluir os aeroportos indicados. Escolha Aeroporto para selecionar apenas um.")
-        if stop_filter != "Somente direto":
-            layover_limit = st.selectbox("Tempo máximo de escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"], help="Este filtro é aplicado na busca detalhada dos voos.")
-        else:
-            layover_limit = "Sem limite"
-    submitted = st.form_submit_button("🔎 Encontrar passagens", type="primary", use_container_width=True)
-
+    else:
+        inbound_direction, inbound_days = "Somente depois", 0
+else:
+    returning = None
+    return_flexible = False
+    trip_duration = st.number_input("Duração da viagem em dias", min_value=1, max_value=30, value=3)
+    inbound_direction, inbound_days = "Somente depois", 0
+st.subheader("4. Preferências da passagem")
+col_price, col_stops = st.columns(2)
+with col_price:
+    budget = st.number_input("Orçamento máximo (USD)", min_value=20, max_value=20000, value=500, step=25)
+with col_stops:
+    stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"])
+if stop_filter != "Somente direto":
+    layover_limit = st.selectbox("Tempo máximo de cada escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"], help="Aplicado somente na consulta detalhada do voo.")
+else:
+    layover_limit = "Sem limite"
+submitted = st.button("🔎 Encontrar passagens", type="primary", use_container_width=True)
 @st.cache_data(ttl=3600, show_spinner=False)
 def search(origin, destination, start_str, last_str, duration, stop_code, return_str=None):
     cmd = [
