@@ -4,6 +4,7 @@ import subprocess
 from datetime import date, timedelta
 
 import streamlit as st
+import airportsdata
 
 st.set_page_config(page_title="Flight Hunter", page_icon="✈️", layout="wide")
 st.title("✈️ Flight Hunter")
@@ -36,11 +37,34 @@ ORIGINS = {
     "Austin": "AUS", "Rio de Janeiro": "GIG", "Lisboa": "LIS", "Londres": "LHR",
 }
 
-st.info("Escolha aeroportos da lista ou digite códigos IATA de 3 letras, como CNF, BSB, NRT ou LHR. Pesquisamos até 8 destinos por vez.")
+@st.cache_resource(show_spinner=False)
+def airport_choices():
+    choices = {}
+    # Frequent routes first, with Portuguese city names when available.
+    for name, code in {**ORIGINS, **DESTINATIONS}.items():
+        choices[f"{name} ({code})"] = code
+    for code, data in airportsdata.load("IATA").items():
+        if not re.fullmatch(r"[A-Z]{3}", code):
+            continue
+        city = str(data.get("city") or "").strip()
+        airport = str(data.get("name") or "").strip()
+        country = str(data.get("country") or "").strip()
+        if not city:
+            continue
+        label = f"{city} · {airport} ({code})"
+        if country:
+            label += f" · {country}"
+        choices.setdefault(label, code)
+    return choices
+
+AIRPORTS = airport_choices()
+ORIGIN_OPTIONS = {**{f"{name} ({code})": code for name, code in ORIGINS.items()}, **AIRPORTS}
+
+st.info("Digite o nome da cidade ou do aeroporto nos campos de busca. Selecione o resultado pelo código IATA. Você também pode digitar códigos manualmente.")
 with st.form("search"):
     a, b, c = st.columns(3)
     with a:
-        origin_name = st.selectbox("Saindo de", list(ORIGINS))
+        origin_name = st.selectbox("Saindo de (digite uma cidade para procurar)", list(ORIGIN_OPTIONS), help="Clique no campo e comece a digitar o nome da cidade, aeroporto ou código IATA. Exemplo: Belo Horizonte, Confins ou CNF.")
         custom_origin = st.text_input("Outro aeroporto de origem (opcional)", placeholder="Ex.: CNF", max_chars=3, help="Digite o código IATA de três letras. Quando preenchido, substitui a origem escolhida na lista.")
         budget = st.number_input("Orçamento máximo (USD)", min_value=20, max_value=20000, value=500, step=25)
     with b:
@@ -48,7 +72,7 @@ with st.form("search"):
         trip_duration = st.number_input("Duração da viagem (dias)", min_value=1, max_value=30, value=3)
     with c:
         window = st.slider("Flexibilidade da data de partida (dias)", min_value=3, max_value=14, value=7, help="Quantos dias consecutivos o Flight Hunter deve pesquisar, começando na Primeira data de ida. Exemplo: se escolher 11/15/2026 e 7 dias, ele pesquisa saídas de 11/15 até 11/21. A duração da viagem determina a data de volta para cada saída.")
-        selected = st.multiselect("Destinos", list(DESTINATIONS), default=list(DESTINATIONS)[:5], max_selections=8)
+        selected = st.multiselect("Destinos (pesquise por cidade ou aeroporto)", list(AIRPORTS), default=[f"{name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Digite uma cidade como Belo Horizonte, Lisboa ou Tokyo; selecione o aeroporto correto entre os resultados.")
         custom_destinations = st.text_input("Outros destinos por código (opcional)", placeholder="Ex.: NRT, BSB, AKL", help="Separe códigos IATA de três letras por vírgula. Até 8 destinos no total, contando os da lista.")
         stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"])
         layover_limit = st.selectbox("Tempo máximo de escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"])
@@ -137,9 +161,9 @@ def display_segment(name, segment):
     st.caption(f"Total: {pretty_minutes(segment.get('duration'))}. Horários locais conforme retornados pela fonte.")
 
 if submitted or st.session_state.get("last_search"):
-    origin = custom_origin.strip().upper() or ORIGINS[origin_name]
+    origin = custom_origin.strip().upper() or ORIGIN_OPTIONS[origin_name]
     extra_codes = [code.strip().upper() for code in custom_destinations.split(",") if code.strip()]
-    destinations_for_search = {city: DESTINATIONS[city] for city in selected}
+    destinations_for_search = {city: AIRPORTS[city] for city in selected}
     for code in extra_codes:
         destinations_for_search.setdefault(code, code)
     destinations_for_search = {name: code for name, code in destinations_for_search.items() if code != origin}
