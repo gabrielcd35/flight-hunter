@@ -81,6 +81,7 @@ ORIGIN_OPTIONS = {
     **AIRPORTS,
 }
 st.info("Escolha uma cidade para incluir os aeroportos apresentados entre parênteses, ou escolha um aeroporto específico. A busca por cidade compara os aeroportos disponíveis, quando compatíveis com o motor.")
+stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"], help="Selecione Somente direto para ocultar opções de conexão.")
 with st.form("search"):
     a, b, c = st.columns(3)
     with a:
@@ -93,8 +94,10 @@ with st.form("search"):
     with c:
         window = st.slider("Flexibilidade da data de partida (dias)", min_value=1, max_value=14, value=7, disabled=(date_mode == "Data exata (inclusive hoje)"), help="Com Data exata, a pesquisa considera somente o dia escolhido. Com Datas flexíveis, escolhe quantos dias consecutivos pesquisar a partir da data de ida.")
         selected = st.multiselect("Destinos (cidade ou aeroporto)", list(AIRPORTS), default=[f"Aeroporto: {name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Digite uma cidade e escolha Cidade para incluir os aeroportos indicados. Escolha Aeroporto para selecionar apenas um.")
-        stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"])
-        layover_limit = st.selectbox("Tempo máximo de escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"], disabled=(stop_filter == "Somente direto"), help="Não se aplica a voos diretos. Nas demais opções, o limite vale na busca detalhada.")
+        if stop_filter != "Somente direto":
+            layover_limit = st.selectbox("Tempo máximo de escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"], help="Este filtro é aplicado na busca detalhada dos voos.")
+        else:
+            layover_limit = "Sem limite"
     submitted = st.form_submit_button("🔎 Encontrar passagens", type="primary", use_container_width=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
