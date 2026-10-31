@@ -1,339 +1,727 @@
+from __future__ import annotations
+
+import html
 import json
-import re
-import subprocess
 from datetime import date, timedelta
+from typing import Any
 
 import streamlit as st
-import airportsdata
 
-st.set_page_config(page_title="Flight Hunter", page_icon="✈️", layout="wide")
-st.title("✈️ Flight Hunter")
-st.caption("Encontre tarifas entre destinos selecionados e datas flexíveis. Confirme os valores antes de reservar.")
+from flight_hunter.catalog import build_airport_choices, build_origin_choices
+from flight_hunter.core import (
+    airport_code,
+    airline_label,
+    connection_label,
+    date_options,
+    filter_destinations,
+    format_date,
+    format_minutes,
+    format_short_date,
+    format_time,
+    safe_google_flights_url,
+    segment_airlines,
+    valid_airport_codes,
+    valid_date_pairs,
+)
+from flight_hunter.search import cheapest_specific_flight, search_calendar, search_specific_flights
+from flight_hunter.theme import APP_CSS
 
-DESTINATIONS = {
-    "Las Vegas": "LAS", "Los Angeles": "LAX", "Denver": "DEN",
-    "Miami": "MIA", "Nova York (JFK)": "JFK", "San Francisco": "SFO",
-    "Chicago": "ORD", "Seattle": "SEA", "Orlando": "MCO",
-    "Boston": "BOS", "Cidade do México": "MEX", "Toronto": "YYZ",
-    "Vancouver": "YVR", "São Paulo": "GRU", "Londres": "LHR",
-    "Atlanta": "ATL", "Washington DC": "IAD", "Filadélfia": "PHL", "Detroit": "DTW",
-    "Minneapolis": "MSP", "Salt Lake City": "SLC", "San Diego": "SAN", "Portland": "PDX",
-    "Austin": "AUS", "San Antonio": "SAT", "Nashville": "BNA", "New Orleans": "MSY",
-    "Tampa": "TPA", "Fort Lauderdale": "FLL", "Honolulu": "HNL", "San Juan": "SJU",
-    "Cancún": "CUN", "Monterrey": "MTY", "Bogotá": "BOG", "Medellín": "MDE",
-    "Lima": "LIM", "Santiago": "SCL", "Buenos Aires": "EZE", "Rio de Janeiro": "GIG",
-    "Belo Horizonte": "CNF", "Brasília": "BSB", "Salvador": "SSA", "Recife": "REC",
-    "Fortaleza": "FOR", "Curitiba": "CWB", "Porto Alegre": "POA", "Campinas": "VCP",
-    "Lisboa": "LIS", "Porto": "OPO", "Paris": "CDG", "Madri": "MAD",
-    "Barcelona": "BCN", "Roma": "FCO", "Milão": "MXP", "Amsterdã": "AMS",
-    "Frankfurt": "FRA", "Zurique": "ZRH", "Dublin": "DUB", "Istambul": "IST",
-    "Tóquio": "HND", "Osaka": "KIX", "Seul": "ICN", "Dubai": "DXB",
-    "Doha": "DOH", "Bangkok": "BKK", "Singapura": "SIN", "Sydney": "SYD",
-}
-ORIGINS = {
-    "Phoenix": "PHX", "Dallas": "DFW", "Houston": "IAH",
-    "Los Angeles": "LAX", "São Paulo": "GRU", "Belo Horizonte": "CNF",
-    "Nova York": "JFK", "Miami": "MIA", "Chicago": "ORD", "Atlanta": "ATL",
-    "Austin": "AUS", "Rio de Janeiro": "GIG", "Lisboa": "LIS", "Londres": "LHR",
-}
+
+st.set_page_config(
+    page_title="Flight Hunter · Descubra voos melhores",
+    page_icon="✈",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+st.markdown(APP_CSS, unsafe_allow_html=True)
+
 
 @st.cache_resource(show_spinner=False)
-def airport_choices():
-    from collections import defaultdict
-    catalog = airportsdata.load("IATA")
-    cities = defaultdict(set)
-    choices = {}
-    for code, info in catalog.items():
-        if not re.fullmatch(r"[A-Z]{3}", code):
-            continue
-        city = (info.get("city") or "").strip()
-        country = (info.get("country") or "").strip()
-        name = (info.get("name") or "").strip()
-        if city and name:
-            cities[(city, country)].add(code)
-            choices[f"Aeroporto: {city} · {name} ({code}) · {country}"] = code
-    # Include familiar Portuguese names, grouped by the international dataset's city.
-    for name, code in {**ORIGINS, **DESTINATIONS}.items():
-        choices[f"Aeroporto: {name} ({code})"] = code
-    for (city, country), codes in cities.items():
-        # A bounded multi-airport request avoids very large queries.
-        if len(codes) > 1:
-            codes = sorted(codes)
-            if len(codes) <= 6:
-                choices[f"Cidade: {city} · {country} ({', '.join(codes)})"] = ",".join(codes)
-    # Explicit city groups for popular multi-airport metropolitan areas.
-    popular = {
-        "Nova York": "JFK,LGA,EWR", "São Paulo": "GRU,CGH,VCP",
-        "Rio de Janeiro": "GIG,SDU", "Belo Horizonte": "CNF,PLU",
-        "Londres": "LHR,LGW,STN,LTN,LCY", "Paris": "CDG,ORY,BVA",
-        "Tóquio": "HND,NRT", "Dallas": "DFW,DAL", "Houston": "IAH,HOU",
-        "Washington DC": "IAD,DCA,BWI", "Los Angeles": "LAX,BUR,LGB,SNA,ONT",
-        "Chicago": "ORD,MDW",
-    }
-    for name, codes in popular.items():
-        choices[f"Cidade: {name} ({codes})"] = codes
-    return choices
+def airport_catalogs() -> tuple[dict[str, str], dict[str, str]]:
+    airports = build_airport_choices()
+    return airports, build_origin_choices(airports)
 
-AIRPORTS = airport_choices()
-ORIGIN_OPTIONS = {
-    **{f"Cidade: {name}": next((value for label, value in AIRPORTS.items()
-        if label.startswith(f"Cidade: {name} (")), code) for name, code in ORIGINS.items()},
-    **AIRPORTS,
-}
-st.caption("Escolha a viagem em sequência. As opções extras aparecem apenas quando você ativar.")
-st.subheader("1. Para onde vamos?")
-origin_name = st.selectbox("Origem: cidade ou aeroporto", list(ORIGIN_OPTIONS), help="Selecione Cidade para incluir os aeroportos indicados, ou escolha um aeroporto específico.")
-selected = st.multiselect("Destino: cidade ou aeroporto", list(AIRPORTS), default=[], max_selections=8, help="Escolha até oito destinos. Digite a cidade para encontrar aeroportos.")
-st.subheader("2. Quando você quer sair?")
-start = st.date_input("Data de ida (MM/DD/YYYY)", value=date.today(), min_value=date.today(), format="MM/DD/YYYY")
-departure_flexible = st.checkbox("Quero flexibilidade na ida", help="Permite pesquisar dias antes ou depois da data escolhida.")
-if departure_flexible:
-    col_ida_dir, col_ida_dias = st.columns(2)
-    with col_ida_dir:
-        outbound_direction = st.selectbox("Procurar datas de ida", ["Antes e depois", "Somente antes", "Somente depois"])
-    with col_ida_dias:
-        outbound_days = st.slider("Dias de flexibilidade da ida", 1, 5, 2)
-else:
-    outbound_direction, outbound_days = "Somente depois", 0
-st.subheader("3. Quando você quer voltar?")
-return_mode = st.radio("Definir volta por", ["Data de volta", "Duração da viagem"], horizontal=True)
-if return_mode == "Data de volta":
-    returning = st.date_input("Data de volta (MM/DD/YYYY)", value=date.today() + timedelta(days=3), min_value=date.today(), format="MM/DD/YYYY")
-    trip_duration = None
-    return_flexible = st.checkbox("Quero flexibilidade na volta", help="Permite pesquisar dias antes ou depois da data de volta.")
-    if return_flexible:
-        col_volta_dir, col_volta_dias = st.columns(2)
-        with col_volta_dir:
-            inbound_direction = st.selectbox("Procurar datas de volta", ["Antes e depois", "Somente antes", "Somente depois"])
-        with col_volta_dias:
-            inbound_days = st.slider("Dias de flexibilidade da volta", 1, 5, 2)
-    else:
-        inbound_direction, inbound_days = "Somente depois", 0
-else:
-    returning = None
-    return_flexible = False
-    trip_duration = st.number_input("Duração da viagem em dias", min_value=1, max_value=30, value=3)
-    inbound_direction, inbound_days = "Somente depois", 0
-st.subheader("4. Preferências da passagem")
-col_price, col_stops = st.columns(2)
-with col_price:
-    budget = st.number_input("Orçamento máximo (USD)", min_value=20, max_value=20000, value=500, step=25)
-with col_stops:
-    stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"])
-if stop_filter != "Somente direto":
-    layover_limit = st.selectbox("Tempo máximo de cada escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"], help="Aplicado somente na consulta detalhada do voo.")
-else:
-    layover_limit = "Sem limite"
-submitted = st.button("🔎 Encontrar passagens", type="primary", use_container_width=True)
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def search(origin, destination, start_str, last_str, duration, stop_code, return_str=None):
-    cmd = [
-        "fli", "dates", origin, destination,
-        "--from", start_str, "--to", last_str,
-        "--duration", str(duration), "--round", "--sort", "--format", "json", "--stops", stop_code,
-    ]
-    if return_str:
-        cmd = ["fli", "flights", origin, destination, start_str, "--return", return_str, "--stops", stop_code, "--sort", "CHEAPEST", "--format", "json"]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
-        if proc.returncode != 0:
-            return None, (proc.stderr or proc.stdout or "Falha sem detalhes")[-500:]
-        payload = json.loads(proc.stdout)
-        if return_str:
-            flights = [x for x in payload.get("flights", []) if isinstance(x.get("price"), (int, float))]
-            if not flights:
-                return None, "Nenhum voo encontrado para essas datas"
-            best = min(flights, key=lambda x: x["price"])
-            return {"departure_date": start_str, "return_date": return_str, "price": best["price"], "booking_url": best.get("booking_url") or payload.get("booking_url", "")}, None
-        prices = [
-            x for x in payload.get("dates", [])
-            if isinstance(x.get("price"), (int, float))
-        ]
-        if not prices:
-            return None, "Nenhuma tarifa encontrada para esse período"
-        return min(prices, key=lambda x: x["price"]), None
-    except subprocess.TimeoutExpired:
-        return None, "A consulta demorou demais"
-    except (ValueError, OSError) as err:
-        return None, str(err)
+def cached_calendar_search(
+    origin: str,
+    destination: str,
+    first_departure: str,
+    last_departure: str,
+    duration: int,
+    stop_code: str,
+    layover_minutes: int | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    return search_calendar(
+        origin,
+        destination,
+        first_departure,
+        last_departure,
+        duration,
+        stop_code,
+        layover_minutes,
+    )
 
 
-def pretty_time(raw):
-    if not raw:
-        return "Horário indisponível"
-    try:
-        return __import__("datetime").datetime.fromisoformat(raw).strftime("%m/%d %I:%M %p")
-    except (ValueError, TypeError):
-        return str(raw)
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_specific_search(
+    origin: str,
+    destination: str,
+    departure: str,
+    returning: str,
+    stop_code: str,
+    layover_minutes: int | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    return cheapest_specific_flight(
+        origin,
+        destination,
+        departure,
+        returning,
+        stop_code,
+        layover_minutes,
+    )
 
-def pretty_minutes(raw):
-    if not isinstance(raw, (int, float)):
-        return "Não informado"
-    raw = int(raw)
-    return f"{raw // 60}h {raw % 60:02d}min"
-
-def airport_code(obj):
-    if isinstance(obj, dict):
-        return str(obj.get("code") or obj.get("iata_code") or obj.get("name") or "?")
-    return str(obj or "?")
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def detailed_search(origin, destination, departure, returning, stop_code, layover_limit):
-    command = [
-        "fli", "flights", origin, destination, departure,
-        "--return", returning, "--stops", stop_code,
-        "--sort", "CHEAPEST", "--format", "json",
-    ]
-    if layover_limit != "Sem limite":
-        command += ["--max-layover", str(int(layover_limit.split()[0]) * 60)]
-    try:
-        response = subprocess.run(command, text=True, capture_output=True, timeout=150)
-        if response.returncode != 0:
-            return [], (response.stderr or response.stdout or "Falha na consulta")[-400:]
-        data = json.loads(response.stdout)
-        return data.get("flights", []), None
-    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
-        return [], str(error)
+def cached_itinerary_search(
+    origin: str,
+    destination: str,
+    departure: str,
+    returning: str,
+    stop_code: str,
+    layover_minutes: int | None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    return search_specific_flights(
+        origin,
+        destination,
+        departure,
+        returning,
+        stop_code,
+        layover_minutes,
+    )
 
-def display_segment(name, segment):
-    st.markdown(f"**{name}**")
+
+def escape(value: Any) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def render_hero() -> None:
+    st.markdown(
+        """
+        <section class="fh-hero">
+            <div class="fh-brand">
+                <div class="fh-mark"><span>✈</span></div>
+                <span>Flight Hunter</span>
+            </div>
+            <p class="fh-eyebrow">Busca inteligente de passagens</p>
+            <h1>Mais possibilidades.<br><span>Uma escolha mais simples.</span></h1>
+            <p class="fh-hero-copy">
+                Compare datas e destinos em uma única busca. Encontre uma tarifa promissora,
+                confira o itinerário real e finalize com segurança no Google Flights.
+            </p>
+            <div class="fh-trust-row">
+                <span class="fh-trust-chip">✓ Aeroportos internacionais</span>
+                <span class="fh-trust-chip">✓ Datas flexíveis independentes</span>
+                <span class="fh-trust-chip">✓ Verificação no Google Flights</span>
+            </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_step(number: int, title: str, description: str) -> None:
+    st.markdown(
+        f"""
+        <div class="fh-step">
+            <span class="fh-step-number">{number:02d}</span>
+            <div><h3>{escape(title)}</h3><p>{escape(description)}</p></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def segment_markup(title: str, segment: dict[str, Any]) -> str:
     legs = segment.get("legs") or []
     if not legs:
-        st.caption("Horários indisponíveis.")
-        return
+        return (
+            '<div class="fh-segment"><div class="fh-segment-top">'
+            f"<strong>{escape(title)}</strong></div>"
+            '<div class="fh-segment-meta">Horários não informados pela fonte.</div></div>'
+        )
+
+    first_leg, last_leg = legs[0], legs[-1]
+    departure_time = format_time(first_leg.get("departure_time"))
+    arrival_time = format_time(last_leg.get("arrival_time"))
+    departure_date = format_short_date(first_leg.get("departure_time"))
+    arrival_date = format_short_date(last_leg.get("arrival_time"))
+    departure_airport = airport_code(first_leg.get("departure_airport"))
+    arrival_airport = airport_code(last_leg.get("arrival_airport"))
+    airlines = " + ".join(segment_airlines(segment)) or "Companhia não informada"
+
+    details: list[str] = []
     layovers = segment.get("layovers") or []
     for index, leg in enumerate(legs):
-        departure = airport_code(leg.get("departure_airport"))
-        arrival = airport_code(leg.get("arrival_airport"))
-        st.write(f"✈️ {departure} {pretty_time(leg.get('departure_time'))} → {arrival} {pretty_time(leg.get('arrival_time'))}")
-        st.caption(f"Voo {leg.get('flight_number', '')} • Duração {pretty_minutes(leg.get('duration'))}")
+        airline = airline_label(leg.get("airline"))
+        flight_number = leg.get("flight_number") or ""
+        details.append(
+            '<div class="fh-leg">'
+            f"{escape(airport_code(leg.get('departure_airport')))} {escape(format_time(leg.get('departure_time')))}"
+            " &nbsp;→&nbsp; "
+            f"{escape(airport_code(leg.get('arrival_airport')))} {escape(format_time(leg.get('arrival_time')))}"
+            f" · {escape(airline)} {escape(flight_number)} · {escape(format_minutes(leg.get('duration')))}"
+            "</div>"
+        )
         if index < len(legs) - 1:
             if index < len(layovers):
                 layover = layovers[index]
-                st.info(f"Conexão em {airport_code(layover.get('airport'))} • {pretty_minutes(layover.get('duration'))}" + (" • Pernoite" if layover.get("overnight") else "") + (" • Troca de aeroporto" if layover.get("change_of_airport") else ""))
+                flags = []
+                if layover.get("overnight"):
+                    flags.append("pernoite")
+                if layover.get("change_of_airport"):
+                    flags.append("troca de aeroporto")
+                suffix = f" · {', '.join(flags)}" if flags else ""
+                details.append(
+                    '<div class="fh-layover">Conexão em '
+                    f"{escape(airport_code(layover.get('airport')))} · "
+                    f"{escape(format_minutes(layover.get('duration')))}{escape(suffix)}</div>"
+                )
             else:
-                st.info("Conexão com duração não informada")
-    st.caption(f"Total: {pretty_minutes(segment.get('duration'))}. Horários locais conforme retornados pela fonte.")
+                details.append('<div class="fh-layover">Duração da conexão não informada</div>')
 
-if submitted or st.session_state.get("last_search"):
-    origin = ORIGIN_OPTIONS[origin_name]
-    destinations_for_search = {city: AIRPORTS[city] for city in selected}
-    origin_airports = set(origin.split(","))
-    destinations_for_search = {name: code for name, code in destinations_for_search.items() if not set(code.split(",")).issubset(origin_airports)}
-    invalid = [code for code in [origin] + list(destinations_for_search.values()) if not re.fullmatch(r"[A-Z]{3}(?:,[A-Z]{3})*", code)]
-    if submitted and invalid:
-        st.error("O aeroporto selecionado tem um código inválido. Selecione outro aeroporto.")
-    elif submitted and len(destinations_for_search) > 8:
-        st.error("Selecione no máximo 8 destinos.")
-    elif not destinations_for_search and submitted:
-        st.warning("Selecione pelo menos um destino diferente da origem.")
-    else:
-        stop_code = {"Qualquer voo": "ANY", "Somente direto": "0", "Até 1 escala": "1"}[stop_filter]
-        def date_options(base, enabled, direction, days):
-            offsets = [0]
-            if enabled and direction in ("Antes e depois", "Somente antes"):
-                offsets += list(range(-days, 0))
-            if enabled and direction in ("Antes e depois", "Somente depois"):
-                offsets += list(range(1, days + 1))
-            return sorted({base + timedelta(days=n) for n in offsets if base + timedelta(days=n) >= date.today()})
-        departures = date_options(start, departure_flexible, outbound_direction, outbound_days)
-        returns = date_options(returning, return_flexible, inbound_direction, inbound_days) if returning else []
-        pairs = [(d, r) for d in departures for r in returns if r > d]
-        invalid_return = bool(returning and not pairs)
-        calls = len(destinations_for_search) * (len(pairs) if returning else 1)
-        skip_search = invalid_return or calls > 40
-        if invalid_return:
-            st.error("A volta precisa ser posterior à ida.")
-        elif submitted and calls > 40:
-            st.error(f"Essa pesquisa exigiria {calls} consultas. Reduza a flexibilidade ou o número de destinos (limite de 40).")
-        status = st.empty()
-        progress = st.progress(0)
-        results, errors = [], []
-        for i, city in enumerate(destinations_for_search if submitted and not skip_search else [], start=1):
-            status.write(f"Pesquisando {city} ({i} de {len(destinations_for_search)})...")
-            if returning:
-                options, failures = [], []
-                for dep, ret in pairs:
-                    choice, failure = search(origin, destinations_for_search[city], dep.isoformat(), dep.isoformat(), None, stop_code, ret.isoformat())
-                    if choice:
-                        options.append(choice)
-                    elif failure:
-                        failures.append(failure)
-                item = min(options, key=lambda x: x["price"]) if options else None
-                error = None if item else (failures[0] if failures else "Nenhum voo encontrado.")
-            else:
-                item, error = search(origin, destinations_for_search[city], departures[0].isoformat(), departures[-1].isoformat(), trip_duration, stop_code)
-            if error:
-                errors.append((city, error))
-            else:
-                results.append({
-                    "Destino": city,
-                    "Código": destinations_for_search[city],
-                    "Preço USD": item["price"],
-                    "Ida": item["departure_date"],
-                    "Volta": item["return_date"],
-                    "Link": item.get("booking_url", ""),
-                })
-            progress.progress(i / len(destinations_for_search))
-        status.empty()
-        if submitted and not skip_search:
-            st.session_state["last_search"] = {"results": results, "errors": errors, "origin": origin, "budget": budget, "stop_code": stop_code, "layover": ("Sem limite" if stop_code == "0" else layover_limit)}
-            st.session_state["details"] = {}
-        saved = st.session_state.get("last_search")
-        if saved is None:
-            st.stop()
-        results, errors = saved["results"], saved["errors"]
-        origin, budget, stop_code, layover_limit = saved["origin"], saved["budget"], saved["stop_code"], saved["layover"]
-        results.sort(key=lambda x: x["Preço USD"])
-        affordable = [x for x in results if x["Preço USD"] <= budget]
-        st.subheader(f"{len(affordable)} opções até ${budget:,.0f}")
-        if affordable:
-            for r in affordable:
-                with st.container(border=True):
-                    left, middle, right = st.columns([2, 2, 1])
-                    left.markdown(f"**{r['Destino']}**")
-                    left.caption(f"{r['Ida']} a {r['Volta']}")
-                    middle.metric("Ida e volta", f"${r['Preço USD']:,.0f}")
-                    if r["Link"].startswith("https://www.google.com/travel/flights"):
-                        right.link_button("Conferir preço", r["Link"])
-                    with st.expander("🕒 Horários de saída, chegada e conexões", expanded=True):
-                        st.caption("Clique para consultar detalhes do itinerário; o preço pode variar em relação ao calendário.")
-                        detail_key = f"detail_{origin}_{r['Destino']}_{r['Ida']}"
-                        if st.button("Carregar horários e escalas", key=detail_key):
-                            with st.spinner("Consultando voos detalhados..."):
-                                st.session_state["details"][detail_key] = detailed_search(origin, r["Código"], r["Ida"], r["Volta"], stop_code, layover_limit)
-                        if detail_key in st.session_state.get("details", {}):
-                            flights, error = st.session_state["details"][detail_key]
-                            if error:
-                                st.error(error)
-                            else:
-                                eligible = sorted([f for f in flights if isinstance(f.get("price"), (int, float)) and f["price"] <= budget], key=lambda f: f["price"])
-                                if not eligible:
-                                    st.warning("Nenhum itinerário detalhado dentro do orçamento e filtros selecionados. Confira no Google Flights.")
-                                for f in eligible[:3]:
-                                    st.markdown(f"### USD {f['price']:,.0f}")
-                                    st.caption(f"Total de escalas (ida e volta): {f.get('stops', 'não informado')}")
-                                    display_segment("Ida", f.get("outbound") or {})
-                                    display_segment("Volta", f.get("return") or {})
-                                    url = f.get("booking_url", "")
-                                    if url.startswith("https://www.google.com/travel/flights"):
-                                        st.link_button("Conferir itinerário", url)
-                                    st.divider()
+    return f"""
+        <div class="fh-segment">
+            <div class="fh-segment-top">
+                <strong>{escape(title)}</strong>
+                <span>{escape(airlines)}</span>
+            </div>
+            <div class="fh-time-row">
+                <span class="fh-time">{escape(departure_time)}</span>
+                <span class="fh-flight-line"></span>
+                <span class="fh-time">{escape(arrival_time)}</span>
+            </div>
+            <div class="fh-airports">
+                <span>{escape(departure_airport)} · {escape(departure_date)}</span>
+                <span>{escape(arrival_airport)} · {escape(arrival_date)}</span>
+            </div>
+            <div class="fh-segment-meta">
+                {escape(format_minutes(segment.get('duration')))} · {escape(connection_label(segment))}
+            </div>
+            <div class="fh-leg-list">{''.join(details)}</div>
+        </div>
+    """
+
+
+def render_itinerary(flight: dict[str, Any]) -> None:
+    outbound = flight.get("outbound") or {}
+    returning = flight.get("return") or {}
+    st.markdown(
+        '<div class="fh-itinerary-grid">'
+        + segment_markup("Ida", outbound)
+        + segment_markup("Volta", returning)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<p class="fh-confirm-note">Horários exibidos no fuso local de cada aeroporto, conforme retornados pela fonte.</p>',
+        unsafe_allow_html=True,
+    )
+
+
+def signature_for(values: dict[str, Any]) -> str:
+    return json.dumps(values, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def render_fare_card(
+    result: dict[str, Any],
+    index: int,
+    saved: dict[str, Any],
+    current_budget: int,
+) -> None:
+    is_confirmed = result["fare_type"] == "specific"
+    badge_class = "confirmed" if is_confirmed else ""
+    badge_label = "Itinerário encontrado" if is_confirmed else "Tarifa de calendário"
+    source_label = "Busca detalhada" if is_confirmed else "Estimativa de calendário"
+    price = float(result["price"])
+    price_text = f"US$ {price:,.0f}"
+
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <div class="fh-fare-head">
+                <div>
+                    <span class="fh-badge {badge_class}">{escape(badge_label)}</span>
+                    <h3 class="fh-fare-title">{escape(result['destination'])}
+                        <span>{escape(result['code'])}</span>
+                    </h3>
+                    <p class="fh-route">{escape(saved['origin'])} → {escape(result['code'])} · ida e volta</p>
+                </div>
+                <div class="fh-price">
+                    <span>Preço total</span>
+                    <strong>{escape(price_text)}</strong>
+                    <small>1 adulto · classe econômica</small>
+                </div>
+            </div>
+            <div class="fh-facts">
+                <div class="fh-fact"><span>Ida</span><strong>{escape(format_date(result['departure_date']))}</strong></div>
+                <div class="fh-fact"><span>Volta</span><strong>{escape(format_date(result['return_date']))}</strong></div>
+                <div class="fh-fact"><span>Tipo de resultado</span><strong>{escape(source_label)}</strong></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        booking_url = safe_google_flights_url(result.get("booking_url"))
+
+        if is_confirmed and result.get("itinerary"):
+            render_itinerary(result["itinerary"])
+            st.caption(
+                "Este preço está associado ao itinerário exibido, mas disponibilidade e valor final ainda podem mudar."
+            )
+            if booking_url:
+                st.link_button(
+                    "Verificar este itinerário no Google Flights ↗",
+                    booking_url,
+                    use_container_width=True,
+                )
+            return
+
+        st.markdown(
+            """
+            <div class="fh-calendar-note">
+                Este é o menor valor encontrado no calendário para estas datas. Companhia, horários e conexões
+                só aparecem depois da consulta detalhada — nenhum dado de itinerário é estimado.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        detail_key = (
+            f"details_{saved['origin']}_{result['code']}_"
+            f"{result['departure_date']}_{result['return_date']}_{saved['stop_code']}_{saved['layover_minutes']}"
+        )
+        action_col, link_col = st.columns(2, gap="small")
+        with action_col:
+            load_details = st.button(
+                "Consultar horários e conexões",
+                key=f"load_{index}_{detail_key}",
+                use_container_width=True,
+            )
+        with link_col:
+            if booking_url:
+                st.link_button(
+                    "Ver tarifa no Google Flights ↗",
+                    booking_url,
+                    use_container_width=True,
+                )
+
+        if load_details:
+            with st.spinner("Consultando itinerários reais para estas datas…"):
+                st.session_state["details"][detail_key] = cached_itinerary_search(
+                    saved["origin"],
+                    result["code"],
+                    result["departure_date"],
+                    result["return_date"],
+                    saved["stop_code"],
+                    saved["layover_minutes"],
+                )
+
+        if detail_key not in st.session_state.get("details", {}):
+            return
+
+        flights, error = st.session_state["details"][detail_key]
+        if error:
+            st.error(error)
+            return
+
+        eligible = sorted(
+            [flight for flight in flights if float(flight["price"]) <= current_budget],
+            key=lambda flight: flight["price"],
+        )
+        if not eligible:
+            st.warning(
+                "Os itinerários detalhados disponíveis agora estão acima do orçamento. "
+                "A tarifa de calendário pode ter mudado."
+            )
+            return
+
+        st.markdown("#### Itinerários detalhados dentro do orçamento")
+        for option_index, flight in enumerate(eligible[:3], start=1):
+            st.markdown(
+                f"**Opção {option_index} · US$ {float(flight['price']):,.0f} · "
+                f"{escape(connection_label(flight.get('outbound') or {}))} na ida**"
+            )
+            render_itinerary(flight)
+            option_url = safe_google_flights_url(flight.get("booking_url"))
+            if option_url:
+                st.link_button(
+                    f"Verificar opção {option_index} no Google Flights ↗",
+                    option_url,
+                    key=f"book_{detail_key}_{option_index}",
+                )
+            if option_index < min(len(eligible), 3):
+                st.divider()
+
+
+AIRPORTS, ORIGIN_OPTIONS = airport_catalogs()
+st.session_state.setdefault("details", {})
+
+render_hero()
+st.markdown(
+    """
+    <div class="fh-intro">
+        <div><h2>Planeje sua próxima viagem</h2><p>As opções aparecem somente quando são relevantes.</p></div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+with st.container(border=True):
+    render_step(1, "Onde você quer voar?", "Pesquise por cidade para incluir aeroportos próximos ou escolha um aeroporto específico.")
+    origin_col, destination_col = st.columns(2, gap="large")
+    with origin_col:
+        origin_name = st.selectbox(
+            "De onde você sai?",
+            list(ORIGIN_OPTIONS),
+            help="A opção Cidade inclui os aeroportos listados quando o motor de busca permite.",
+        )
+    with destination_col:
+        selected = st.multiselect(
+            "Para onde você quer ir?",
+            list(AIRPORTS),
+            default=[],
+            max_selections=8,
+            placeholder="Digite uma cidade ou código IATA",
+            help="Você pode comparar até oito destinos na mesma busca.",
+        )
+
+with st.container(border=True):
+    render_step(2, "Quando você quer sair?", "Comece por uma data exata e amplie a busca apenas se quiser flexibilidade.")
+    departure_col, departure_flex_col = st.columns([1, 1.2], gap="large")
+    with departure_col:
+        start = st.date_input(
+            "Data de ida (MM/DD/YYYY)",
+            value=date.today(),
+            min_value=date.today(),
+            format="MM/DD/YYYY",
+        )
+    with departure_flex_col:
+        departure_flexible = st.toggle(
+            "Datas de ida flexíveis",
+            help="Pesquise alguns dias antes, depois ou nos dois sentidos.",
+        )
+        if departure_flexible:
+            direction_col, days_col = st.columns([1.4, 1], gap="small")
+            with direction_col:
+                outbound_direction = st.selectbox(
+                    "Flexibilidade da ida",
+                    ["Antes e depois", "Somente antes", "Somente depois"],
+                )
+            with days_col:
+                outbound_days = st.selectbox("Número de dias", [1, 2, 3, 4, 5], index=1)
         else:
-            st.warning("Nenhuma tarifa consultada ficou dentro do orçamento. Tente outras datas ou destinos.")
-        if results:
-            st.dataframe(results, hide_index=True, use_container_width=True)
+            outbound_direction, outbound_days = "Somente depois", 0
+
+with st.container(border=True):
+    render_step(3, "Quando você quer voltar?", "Escolha uma volta exata ou deixe o Flight Hunter calcular pela duração da viagem.")
+    return_mode = st.radio(
+        "Como definir a volta?",
+        ["Data de volta", "Duração da viagem"],
+        horizontal=True,
+    )
+    if return_mode == "Data de volta":
+        return_col, return_flex_col = st.columns([1, 1.2], gap="large")
+        with return_col:
+            returning = st.date_input(
+                "Data de volta (MM/DD/YYYY)",
+                value=max(start + timedelta(days=3), date.today() + timedelta(days=1)),
+                min_value=start + timedelta(days=1),
+                format="MM/DD/YYYY",
+            )
+        trip_duration = None
+        with return_flex_col:
+            return_flexible = st.toggle(
+                "Datas de volta flexíveis",
+                help="A flexibilidade da volta funciona de forma independente da ida.",
+            )
+            if return_flexible:
+                return_direction_col, return_days_col = st.columns([1.4, 1], gap="small")
+                with return_direction_col:
+                    inbound_direction = st.selectbox(
+                        "Flexibilidade da volta",
+                        ["Antes e depois", "Somente antes", "Somente depois"],
+                    )
+                with return_days_col:
+                    inbound_days = st.selectbox("Número de dias da volta", [1, 2, 3, 4, 5], index=1)
+            else:
+                inbound_direction, inbound_days = "Somente depois", 0
+    else:
+        returning = None
+        return_flexible = False
+        inbound_direction, inbound_days = "Somente depois", 0
+        trip_duration = st.number_input(
+            "Duração da viagem em dias",
+            min_value=1,
+            max_value=30,
+            value=3,
+            help="A volta será calculada a partir de cada data de ida pesquisada.",
+        )
+
+with st.container(border=True):
+    render_step(4, "Preferências do voo", "Defina o que realmente importa; os demais filtros ficam fora do caminho.")
+    budget_col, nonstop_col = st.columns(2, gap="large")
+    with budget_col:
+        budget = st.number_input(
+            "Orçamento máximo por pessoa (USD)",
+            min_value=20,
+            max_value=20_000,
+            value=500,
+            step=25,
+        )
+    with nonstop_col:
+        nonstop_only = st.toggle("Somente voos diretos")
+        st.caption("Sem conexões na ida e na volta." if nonstop_only else "Voos com conexão também podem aparecer.")
+
+    with st.expander("Preferências avançadas", expanded=False):
+        if nonstop_only:
+            stop_label = "Somente direto"
+            stop_code = "0"
+            layover_label = "Não se aplica"
+            layover_minutes = None
+            st.info("O limite de conexão não se aplica porque você escolheu somente voos diretos.")
+        else:
+            connection_col, layover_col = st.columns(2, gap="large")
+            with connection_col:
+                stop_label = st.selectbox(
+                    "Número máximo de conexões",
+                    ["Sem limite", "Até 1 conexão", "Até 2 conexões"],
+                    index=1,
+                )
+                stop_code = {"Sem limite": "ANY", "Até 1 conexão": "1", "Até 2 conexões": "2"}[stop_label]
+            with layover_col:
+                layover_label = st.selectbox(
+                    "Duração máxima de cada conexão",
+                    ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"],
+                )
+                layover_minutes = None if layover_label == "Sem limite" else int(layover_label.split()[0]) * 60
+
+submitted = st.button("Buscar melhores voos  →", type="primary", use_container_width=True)
+st.markdown(
+    '<p class="fh-search-note">Buscas detalhadas podem levar alguns instantes. Nunca exibimos horários ou companhias inventados.</p>',
+    unsafe_allow_html=True,
+)
+
+origin = ORIGIN_OPTIONS[origin_name]
+destinations_for_search = filter_destinations(
+    origin,
+    {label: AIRPORTS[label] for label in selected},
+)
+departures = date_options(start, departure_flexible, outbound_direction, outbound_days)
+returns = date_options(returning, return_flexible, inbound_direction, inbound_days) if returning else []
+pairs = valid_date_pairs(departures, returns) if returning else []
+
+current_signature = signature_for(
+    {
+        "origin": origin,
+        "destinations": destinations_for_search,
+        "start": start,
+        "departure_flexible": departure_flexible,
+        "outbound_direction": outbound_direction,
+        "outbound_days": outbound_days,
+        "return_mode": return_mode,
+        "returning": returning,
+        "return_flexible": return_flexible,
+        "inbound_direction": inbound_direction,
+        "inbound_days": inbound_days,
+        "trip_duration": trip_duration,
+        "stop_code": stop_code,
+        "layover_minutes": layover_minutes,
+    }
+)
+
+if submitted:
+    invalid_codes = [
+        codes
+        for codes in [origin, *destinations_for_search.values()]
+        if not valid_airport_codes(codes)
+    ]
+    call_count = len(destinations_for_search) * (len(pairs) if returning else 1)
+
+    if invalid_codes:
+        st.error("Um dos aeroportos selecionados tem código inválido. Escolha outra opção no catálogo.")
+    elif not destinations_for_search:
+        st.warning("Escolha pelo menos um destino diferente da origem.")
+    elif returning and not pairs:
+        st.error("A data de volta precisa ser posterior à data de ida.")
+    elif call_count > 40:
+        st.error(
+            f"Essa combinação exigiria {call_count} consultas. Reduza a flexibilidade ou o número de destinos "
+            "para ficar no limite de 40."
+        )
+    else:
+        results: list[dict[str, Any]] = []
+        errors: list[tuple[str, str]] = []
+        search_status = st.status("Preparando a busca…", expanded=True)
+        progress = search_status.progress(0.0)
+
+        for destination_index, (destination_name, destination_code) in enumerate(
+            destinations_for_search.items(), start=1
+        ):
+            search_status.update(
+                label=f"Pesquisando {destination_name} · destino {destination_index} de {len(destinations_for_search)}",
+                state="running",
+            )
+            if returning:
+                candidates: list[dict[str, Any]] = []
+                failures: list[str] = []
+                for departure_option, return_option in pairs:
+                    item, error = cached_specific_search(
+                        origin,
+                        destination_code,
+                        departure_option.isoformat(),
+                        return_option.isoformat(),
+                        stop_code,
+                        layover_minutes,
+                    )
+                    if item:
+                        candidate = dict(item)
+                        candidate["_departure_date"] = departure_option.isoformat()
+                        candidate["_return_date"] = return_option.isoformat()
+                        candidates.append(candidate)
+                    elif error:
+                        failures.append(error)
+                if candidates:
+                    best = min(candidates, key=lambda item: item["price"])
+                    results.append(
+                        {
+                            "destination": destination_name,
+                            "code": destination_code,
+                            "price": best["price"],
+                            "currency": best.get("currency", "USD"),
+                            "departure_date": best["_departure_date"],
+                            "return_date": best["_return_date"],
+                            "booking_url": best.get("booking_url", ""),
+                            "fare_type": "specific",
+                            "itinerary": best,
+                        }
+                    )
+                else:
+                    errors.append((destination_name, failures[0] if failures else "Nenhum voo encontrado."))
+            else:
+                item, error = cached_calendar_search(
+                    origin,
+                    destination_code,
+                    departures[0].isoformat(),
+                    departures[-1].isoformat(),
+                    int(trip_duration),
+                    stop_code,
+                    layover_minutes,
+                )
+                if item:
+                    results.append(
+                        {
+                            "destination": destination_name,
+                            "code": destination_code,
+                            "price": item["price"],
+                            "currency": item.get("currency", "USD"),
+                            "departure_date": item["departure_date"],
+                            "return_date": item["return_date"],
+                            "booking_url": item.get("booking_url", ""),
+                            "fare_type": "calendar",
+                            "itinerary": None,
+                        }
+                    )
+                elif error:
+                    errors.append((destination_name, error))
+
+            progress.progress(destination_index / len(destinations_for_search))
+
+        search_status.update(
+            label=(
+                f"Busca concluída · {len(results)} destino(s) com resultado"
+                if results
+                else "Busca concluída sem tarifas disponíveis"
+            ),
+            state="complete",
+            expanded=False,
+        )
+        st.session_state["last_search"] = {
+            "results": results,
+            "errors": errors,
+            "origin": origin,
+            "stop_code": stop_code,
+            "stop_label": stop_label,
+            "layover_minutes": layover_minutes,
+            "layover_label": layover_label,
+            "signature": current_signature,
+            "searched_destinations": len(destinations_for_search),
+        }
+        st.session_state["details"] = {}
+
+saved = st.session_state.get("last_search")
+if saved:
+    results = sorted(saved["results"], key=lambda item: item["price"])
+    affordable = [item for item in results if float(item["price"]) <= budget]
+    result_label = "opção" if len(affordable) == 1 else "opções"
+    st.markdown(
+        f"""
+        <div class="fh-results-head">
+            <div><h2>Voos que valem sua atenção</h2>
+            <p><span class="fh-count">{len(affordable)} {result_label}</span> até US$ {budget:,.0f}, ordenadas pelo menor preço.</p></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if saved["signature"] != current_signature:
+        st.info("Você alterou os critérios. Os resultados abaixo ainda são da última busca; clique em buscar para atualizar.")
+
+    if affordable:
+        for index, result in enumerate(affordable):
+            render_fare_card(result, index, saved, int(budget))
+    else:
+        st.markdown(
+            """
+            <div class="fh-empty"><strong>Nenhuma tarifa ficou dentro do orçamento.</strong>
+            <span>Aumente o limite, tente datas flexíveis ou compare outros destinos.</span></div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if results:
+        export_rows = [
+            {
+                "Destino": item["destination"],
+                "Aeroportos": item["code"],
+                "Preço USD": item["price"],
+                "Ida": item["departure_date"],
+                "Volta": item["return_date"],
+                "Tipo": "Itinerário detalhado" if item["fare_type"] == "specific" else "Tarifa de calendário",
+                "Google Flights": item.get("booking_url", ""),
+            }
+            for item in results
+        ]
+        with st.expander("Ver tabela e exportar resultados"):
+            st.dataframe(export_rows, hide_index=True, use_container_width=True)
             st.download_button(
-                "Baixar resultados JSON",
-                json.dumps(results, ensure_ascii=False, indent=2),
+                "Baixar resultados em JSON",
+                json.dumps(export_rows, ensure_ascii=False, indent=2),
                 file_name="flight_hunter_results.json",
                 mime="application/json",
             )
-        if errors:
-            with st.expander(f"Consultas sem resultado ({len(errors)})"):
-                for city, err in errors:
-                    st.write(f"**{city}:** {err}")
-        st.caption("O filtro de escalas é aplicado ao calendário. O limite de tempo de conexão é aplicado somente na busca detalhada. Horários locais. Confira bagagem, disponibilidade e tarifa final no Google Flights.")
 
-st.divider()
-st.caption("Protótipo familiar. A coleta pode falhar em servidores compartilhados devido a mudanças ou restrições do Google.")
+    if saved["errors"]:
+        with st.expander(f"Destinos sem resultado ({len(saved['errors'])})"):
+            for destination_name, error in saved["errors"]:
+                st.write(f"**{destination_name}:** {error}")
+
+st.markdown(
+    """
+    <footer class="fh-footer">
+        <strong>Antes de reservar:</strong> preços e disponibilidade podem mudar. Confira tarifa final, bagagem,
+        aeroportos e condições diretamente no Google Flights. O Flight Hunter usa dados do FLI/Google Flights
+        e não vende passagens.
+    </footer>
+    """,
+    unsafe_allow_html=True,
+)
