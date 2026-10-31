@@ -39,33 +39,52 @@ ORIGINS = {
 
 @st.cache_resource(show_spinner=False)
 def airport_choices():
+    from collections import defaultdict
+    catalog = airportsdata.load("IATA")
+    cities = defaultdict(set)
     choices = {}
-    # Frequent routes first, with Portuguese city names when available.
-    for name, code in {**ORIGINS, **DESTINATIONS}.items():
-        choices[f"{name} ({code})"] = code
-    for code, data in airportsdata.load("IATA").items():
+    for code, info in catalog.items():
         if not re.fullmatch(r"[A-Z]{3}", code):
             continue
-        city = str(data.get("city") or "").strip()
-        airport = str(data.get("name") or "").strip()
-        country = str(data.get("country") or "").strip()
-        if not city:
-            continue
-        label = f"{city} · {airport} ({code})"
-        if country:
-            label += f" · {country}"
-        choices.setdefault(label, code)
+        city = (info.get("city") or "").strip()
+        country = (info.get("country") or "").strip()
+        name = (info.get("name") or "").strip()
+        if city and name:
+            cities[(city, country)].add(code)
+            choices[f"Aeroporto: {city} · {name} ({code}) · {country}"] = code
+    # Include familiar Portuguese names, grouped by the international dataset's city.
+    for name, code in {**ORIGINS, **DESTINATIONS}.items():
+        choices[f"Aeroporto: {name} ({code})"] = code
+    for (city, country), codes in cities.items():
+        # A bounded multi-airport request avoids very large queries.
+        if len(codes) > 1:
+            codes = sorted(codes)
+            if len(codes) <= 6:
+                choices[f"Cidade: {city} · {country} ({', '.join(codes)})"] = ",".join(codes)
+    # Explicit city groups for popular multi-airport metropolitan areas.
+    popular = {
+        "Nova York": "JFK,LGA,EWR", "São Paulo": "GRU,CGH,VCP",
+        "Rio de Janeiro": "GIG,SDU", "Belo Horizonte": "CNF,PLU",
+        "Londres": "LHR,LGW,STN,LTN,LCY", "Paris": "CDG,ORY,BVA",
+        "Tóquio": "HND,NRT", "Dallas": "DFW,DAL", "Houston": "IAH,HOU",
+        "Washington DC": "IAD,DCA,BWI", "Los Angeles": "LAX,BUR,LGB,SNA,ONT",
+        "Chicago": "ORD,MDW",
+    }
+    for name, codes in popular.items():
+        choices[f"Cidade: {name} ({codes})"] = codes
     return choices
 
 AIRPORTS = airport_choices()
-ORIGIN_OPTIONS = {**{f"{name} ({code})": code for name, code in ORIGINS.items()}, **AIRPORTS}
-
-st.info("Digite o nome da cidade ou do aeroporto nos campos de busca. Selecione o resultado pelo código IATA. Você também pode digitar códigos manualmente.")
+ORIGIN_OPTIONS = {
+    **{f"Cidade: {name}": next((value for label, value in AIRPORTS.items()
+        if label.startswith(f"Cidade: {name} (")), code) for name, code in ORIGINS.items()},
+    **AIRPORTS,
+}
+st.info("Escolha uma cidade para incluir os aeroportos apresentados entre parênteses, ou escolha um aeroporto específico. A busca por cidade compara os aeroportos disponíveis, quando compatíveis com o motor.")
 with st.form("search"):
     a, b, c = st.columns(3)
     with a:
-        origin_name = st.selectbox("Saindo de (digite uma cidade para procurar)", list(ORIGIN_OPTIONS), help="Clique no campo e comece a digitar o nome da cidade, aeroporto ou código IATA. Exemplo: Belo Horizonte, Confins ou CNF.")
-        custom_origin = st.text_input("Outro aeroporto de origem (opcional)", placeholder="Ex.: CNF", max_chars=3, help="Digite o código IATA de três letras. Quando preenchido, substitui a origem escolhida na lista.")
+        origin_name = st.selectbox("Saindo de (cidade ou aeroporto)", list(ORIGIN_OPTIONS), help="Escolha Cidade para incluir todos os aeroportos listados; ou Aeroporto para escolher somente um. Digite o nome para localizar.")
         budget = st.number_input("Orçamento máximo (USD)", min_value=20, max_value=20000, value=500, step=25)
     with b:
         date_mode = st.selectbox("Como escolher a ida?", ["Data exata (inclusive hoje)", "Datas flexíveis"], help="Data exata pesquisa apenas a data escolhida. Datas flexíveis compara vários dias de partida.")
@@ -73,10 +92,9 @@ with st.form("search"):
         trip_duration = st.number_input("Duração da viagem (dias)", min_value=1, max_value=30, value=3)
     with c:
         window = st.slider("Flexibilidade da data de partida (dias)", min_value=1, max_value=14, value=7, disabled=(date_mode == "Data exata (inclusive hoje)"), help="Com Data exata, a pesquisa considera somente o dia escolhido. Com Datas flexíveis, escolhe quantos dias consecutivos pesquisar a partir da data de ida.")
-        selected = st.multiselect("Destinos (pesquise por cidade ou aeroporto)", list(AIRPORTS), default=[f"{name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Digite uma cidade como Belo Horizonte, Lisboa ou Tokyo; selecione o aeroporto correto entre os resultados.")
-        custom_destinations = st.text_input("Outros destinos por código (opcional)", placeholder="Ex.: NRT, BSB, AKL", help="Separe códigos IATA de três letras por vírgula. Até 8 destinos no total, contando os da lista.")
+        selected = st.multiselect("Destinos (cidade ou aeroporto)", list(AIRPORTS), default=[f"Aeroporto: {name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Digite uma cidade e escolha Cidade para incluir os aeroportos indicados. Escolha Aeroporto para selecionar apenas um.")
         stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"])
-        layover_limit = st.selectbox("Tempo máximo de escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"])
+        layover_limit = st.selectbox("Tempo máximo de escala", ["Sem limite", "2 horas", "3 horas", "4 horas", "6 horas", "8 horas"], disabled=(stop_filter == "Somente direto"), help="Não se aplica a voos diretos. Nas demais opções, o limite vale na busca detalhada.")
     submitted = st.form_submit_button("🔎 Encontrar passagens", type="primary", use_container_width=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -162,17 +180,15 @@ def display_segment(name, segment):
     st.caption(f"Total: {pretty_minutes(segment.get('duration'))}. Horários locais conforme retornados pela fonte.")
 
 if submitted or st.session_state.get("last_search"):
-    origin = custom_origin.strip().upper() or ORIGIN_OPTIONS[origin_name]
-    extra_codes = [code.strip().upper() for code in custom_destinations.split(",") if code.strip()]
+    origin = ORIGIN_OPTIONS[origin_name]
     destinations_for_search = {city: AIRPORTS[city] for city in selected}
-    for code in extra_codes:
-        destinations_for_search.setdefault(code, code)
-    destinations_for_search = {name: code for name, code in destinations_for_search.items() if code != origin}
-    invalid = [code for code in [origin] + extra_codes if not re.fullmatch(r"[A-Z]{3}", code)]
+    origin_airports = set(origin.split(","))
+    destinations_for_search = {name: code for name, code in destinations_for_search.items() if not set(code.split(",")).issubset(origin_airports)}
+    invalid = [code for code in [origin] + list(destinations_for_search.values()) if not re.fullmatch(r"[A-Z]{3}(?:,[A-Z]{3})*", code)]
     if submitted and invalid:
-        st.error("Use códigos IATA com exatamente três letras, como PHX, CNF ou LHR.")
+        st.error("O aeroporto selecionado tem um código inválido. Selecione outro aeroporto.")
     elif submitted and len(destinations_for_search) > 8:
-        st.error("Selecione no máximo 8 destinos somando a lista e os códigos digitados.")
+        st.error("Selecione no máximo 8 destinos.")
     elif not destinations_for_search and submitted:
         st.warning("Selecione pelo menos um destino diferente da origem.")
     else:
@@ -198,10 +214,10 @@ if submitted or st.session_state.get("last_search"):
                     "Volta": item["return_date"],
                     "Link": item.get("booking_url", ""),
                 })
-            progress.progress(i / len(selected))
+            progress.progress(i / len(destinations_for_search))
         status.empty()
         if submitted:
-            st.session_state["last_search"] = {"results": results, "errors": errors, "origin": origin, "budget": budget, "stop_code": stop_code, "layover": layover_limit}
+            st.session_state["last_search"] = {"results": results, "errors": errors, "origin": origin, "budget": budget, "stop_code": stop_code, "layover": ("Sem limite" if stop_code == "0" else layover_limit)}
             st.session_state["details"] = {}
         saved = st.session_state["last_search"]
         results, errors = saved["results"], saved["errors"]
