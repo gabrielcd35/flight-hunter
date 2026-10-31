@@ -83,7 +83,7 @@ ORIGIN_OPTIONS = {
 st.caption("Escolha a viagem em sequência. As opções extras aparecem apenas quando você ativar.")
 st.subheader("1. Para onde vamos?")
 origin_name = st.selectbox("Origem: cidade ou aeroporto", list(ORIGIN_OPTIONS), help="Selecione Cidade para incluir os aeroportos indicados, ou escolha um aeroporto específico.")
-selected = st.multiselect("Destino: cidade ou aeroporto", list(AIRPORTS), default=[f"Aeroporto: {name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Escolha até oito destinos. Digite a cidade para encontrar aeroportos.")
+selected = st.multiselect("Destino: cidade ou aeroporto", list(AIRPORTS), default=[], max_selections=8, help="Escolha até oito destinos. Digite a cidade para encontrar aeroportos.")
 st.subheader("2. Quando você quer sair?")
 start = st.date_input("Data de ida (MM/DD/YYYY)", value=date.today(), min_value=date.today(), format="MM/DD/YYYY")
 departure_flexible = st.checkbox("Quero flexibilidade na ida", help="Permite pesquisar dias antes ou depois da data escolhida.")
