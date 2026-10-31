@@ -90,7 +90,13 @@ with st.form("search"):
     with b:
         date_mode = st.selectbox("Como escolher a ida?", ["Data exata (inclusive hoje)", "Datas flexíveis"], help="Data exata pesquisa apenas a data escolhida. Datas flexíveis compara vários dias de partida.")
         start = st.date_input("Data de ida (MM/DD/YYYY)", value=date.today(), min_value=date.today(), format="MM/DD/YYYY")
-        trip_duration = st.number_input("Duração da viagem (dias)", min_value=1, max_value=30, value=3)
+        return_mode = st.radio("Como escolher a volta?", ["Data de volta", "Duração da viagem"], horizontal=True, help="Escolha a data exata de volta ou use duração fixa para encontrar preços flexíveis.")
+        if return_mode == "Data de volta":
+            returning = st.date_input("Data de volta (MM/DD/YYYY)", value=date.today() + timedelta(days=3), min_value=date.today(), format="MM/DD/YYYY")
+            trip_duration = None
+        else:
+            trip_duration = st.number_input("Duração da viagem (dias)", min_value=1, max_value=30, value=3)
+            returning = None
     with c:
         window = st.slider("Flexibilidade da data de partida (dias)", min_value=1, max_value=14, value=7, disabled=(date_mode == "Data exata (inclusive hoje)"), help="Com Data exata, a pesquisa considera somente o dia escolhido. Com Datas flexíveis, escolhe quantos dias consecutivos pesquisar a partir da data de ida.")
         selected = st.multiselect("Destinos (cidade ou aeroporto)", list(AIRPORTS), default=[f"Aeroporto: {name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Digite uma cidade e escolha Cidade para incluir os aeroportos indicados. Escolha Aeroporto para selecionar apenas um.")
@@ -101,17 +107,25 @@ with st.form("search"):
     submitted = st.form_submit_button("🔎 Encontrar passagens", type="primary", use_container_width=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def search(origin, destination, start_str, last_str, duration, stop_code):
+def search(origin, destination, start_str, last_str, duration, stop_code, return_str=None):
     cmd = [
         "fli", "dates", origin, destination,
         "--from", start_str, "--to", last_str,
         "--duration", str(duration), "--round", "--sort", "--format", "json", "--stops", stop_code,
     ]
+    if return_str:
+        cmd = ["fli", "flights", origin, destination, start_str, "--return", return_str, "--stops", stop_code, "--sort", "CHEAPEST", "--format", "json"]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
         if proc.returncode != 0:
             return None, (proc.stderr or proc.stdout or "Falha sem detalhes")[-500:]
         payload = json.loads(proc.stdout)
+        if return_str:
+            flights = [x for x in payload.get("flights", []) if isinstance(x.get("price"), (int, float))]
+            if not flights:
+                return None, "Nenhum voo encontrado para essas datas"
+            best = min(flights, key=lambda x: x["price"])
+            return {"departure_date": start_str, "return_date": return_str, "price": best["price"], "booking_url": best.get("booking_url") or payload.get("booking_url", "")}, None
         prices = [
             x for x in payload.get("dates", [])
             if isinstance(x.get("price"), (int, float))
@@ -197,15 +211,33 @@ if submitted or st.session_state.get("last_search"):
     else:
         stop_code = {"Qualquer voo": "ANY", "Somente direto": "0", "Até 1 escala": "1"}[stop_filter]
         first_day = start.isoformat()
-        last_day = (start + timedelta(days=(window - 1 if date_mode == "Datas flexíveis" else 0))).isoformat()
+        flexible = date_mode == "Datas flexíveis"
+        last_day = (start + timedelta(days=(window - 1 if flexible else 0))).isoformat()
+        invalid_return = returning is not None and returning <= start
+        if invalid_return:
+            st.error("A data de volta precisa ser posterior à primeira data de ida.")
+        if returning is not None and flexible:
+            st.info("Com volta fixa e ida flexível, cada data de partida exige uma consulta individual. A busca pode ser mais demorada.")
         status = st.empty()
         progress = st.progress(0)
         results, errors = [], []
-        for i, city in enumerate(destinations_for_search if submitted else [], start=1):
+        for i, city in enumerate(destinations_for_search if submitted and not invalid_return else [], start=1):
             status.write(f"Pesquisando {city} ({i} de {len(destinations_for_search)})...")
-            item, error = search(
-                origin, destinations_for_search[city], first_day, last_day, trip_duration, stop_code
-            )
+            if returning is not None and flexible:
+                possibilities, failure_notes = [], []
+                for offset in range(window):
+                    dep = start + timedelta(days=offset)
+                    if dep >= returning:
+                        continue
+                    option, issue = search(origin, destinations_for_search[city], dep.isoformat(), dep.isoformat(), None, stop_code, returning.isoformat())
+                    if option:
+                        possibilities.append(option)
+                    elif issue:
+                        failure_notes.append(issue)
+                item = min(possibilities, key=lambda x: x["price"]) if possibilities else None
+                error = None if item else (failure_notes[0] if failure_notes else "Sem voos para essas datas.")
+            else:
+                item, error = search(origin, destinations_for_search[city], first_day, last_day, trip_duration, stop_code, returning.isoformat() if returning else None)
             if error:
                 errors.append((city, error))
             else:
@@ -219,10 +251,12 @@ if submitted or st.session_state.get("last_search"):
                 })
             progress.progress(i / len(destinations_for_search))
         status.empty()
-        if submitted:
+        if submitted and not invalid_return:
             st.session_state["last_search"] = {"results": results, "errors": errors, "origin": origin, "budget": budget, "stop_code": stop_code, "layover": ("Sem limite" if stop_code == "0" else layover_limit)}
             st.session_state["details"] = {}
-        saved = st.session_state["last_search"]
+        saved = st.session_state.get("last_search")
+        if saved is None:
+            st.stop()
         results, errors = saved["results"], saved["errors"]
         origin, budget, stop_code, layover_limit = saved["origin"], saved["budget"], saved["stop_code"], saved["layover"]
         results.sort(key=lambda x: x["Preço USD"])
