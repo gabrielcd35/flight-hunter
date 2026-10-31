@@ -1,0 +1,2 @@
+"""Flight Hunter application package."""
+
