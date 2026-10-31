@@ -26,6 +26,7 @@ from flight_hunter.core import (
 from flight_hunter.search import cheapest_specific_flight, search_calendar, search_specific_flights
 from flight_hunter.theme import APP_CSS
 from flight_hunter.timeline import SegmentTimeline, build_segment_timeline
+from flight_hunter.market_compare import MARKETS, compare_markets
 
 
 st.set_page_config(
@@ -813,6 +814,70 @@ if saved:
             """,
             unsafe_allow_html=True,
         )
+
+    if affordable:
+        with st.expander("🌍 Global Fare Hunter · Comparar países de venda", expanded=False):
+            st.caption(
+                "Experimental: compara preços no Google Flights com configurações de diferentes países, "
+                "sem trocar VPN ou localização de IP. Todos os preços são solicitados em USD. "
+                "Tarifas podem variar por oferta, disponibilidade e regras de compra."
+            )
+            compare_options = {
+                f"{item['destination']} · {item['departure_date']} → {item['return_date']}": item
+                for item in affordable
+            }
+            compare_label = st.selectbox("Itinerário para comparar", list(compare_options), key="market_route")
+            compare_selected = compare_options[compare_label]
+            markets = st.multiselect(
+                "Países de venda",
+                list(MARKETS),
+                default=["Estados Unidos", "Brasil", "Índia", "México"],
+                max_selections=5,
+                key="market_countries",
+            )
+            st.caption("Uma consulta por país. Recomenda-se começar com 2 ou 3 mercados.")
+            if st.button("Comparar preços internacionais", key="market_button", disabled=not markets):
+                with st.spinner("Consultando tarifas por país..."):
+                    rows, issues = compare_markets(
+                        saved["origin"], compare_selected["code"],
+                        compare_selected["departure_date"], compare_selected["return_date"],
+                        saved["stop_code"], markets,
+                        compare_selected.get("itinerary"),
+                    )
+                st.session_state["market_comparison"] = {
+                    "route": compare_label, "markets": tuple(markets),
+                    "rows": rows, "issues": issues,
+                    "has_reference": bool(compare_selected.get("itinerary")),
+                }
+            saved_compare = st.session_state.get("market_comparison")
+            if saved_compare and saved_compare["route"] == compare_label and saved_compare["markets"] == tuple(markets):
+                rows = saved_compare["rows"]
+                if rows:
+                    st.dataframe(
+                        [{k: v for k, v in row.items() if k != "Link"} for row in rows],
+                        hide_index=True, use_container_width=True
+                    )
+                    if saved_compare["has_reference"]:
+                        matches = [r for r in rows if r["Mesmo itinerário (USD)"] is not None]
+                        if len(matches) >= 2:
+                            highest = max(r["Mesmo itinerário (USD)"] for r in matches)
+                            lowest = min(r["Mesmo itinerário (USD)"] for r in matches)
+                            st.metric("Diferença observada no mesmo itinerário", f"US$ {highest - lowest:,.2f}")
+                        else:
+                            st.info("Não encontramos o mesmo itinerário em dois mercados. Os preços mínimos não são diretamente comparáveis.")
+                    else:
+                        st.info("Comparação exploratória de menores tarifas. Para confirmar economia no mesmo voo, abra primeiro um itinerário detalhado.")
+                    st.caption("Compare o preço final, taxas, bagagem, elegibilidade e meios de pagamento antes de reservar.")
+                    for row in rows:
+                        url = safe_google_flights_url(row["Link"])
+                        if url:
+                            st.link_button(f"Conferir {row['Mercado']} no Google Flights", url)
+                else:
+                    st.warning("Nenhum mercado respondeu com tarifa válida. Tente novamente com menos mercados.")
+                if saved_compare["issues"]:
+                    with st.expander("Consultas indisponíveis"):
+                        for issue in saved_compare["issues"]:
+                            st.write(issue)
 
     if results:
         export_rows = [
