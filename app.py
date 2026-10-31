@@ -784,6 +784,7 @@ if submitted:
             "searched_destinations": len(destinations_for_search),
         }
         st.session_state["details"] = {}
+        st.session_state.pop("market_comparison", None)
 
 saved = st.session_state.get("last_search")
 if saved:
