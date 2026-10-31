@@ -46,20 +46,37 @@ def test_exact_date_search_renders_real_itinerary_fields(monkeypatch):
             {
                 "price": 206,
                 "currency": "USD",
-                "stops": 0,
+                "stops": 1,
                 "booking_url": "https://www.google.com/travel/flights/booking?tfs=test",
                 "outbound": {
-                    "duration": 77,
-                    "stops": 0,
+                    "duration": 300,
+                    "stops": 1,
                     "legs": [
                         {
                             "departure_airport": {"code": "PHX"},
-                            "arrival_airport": {"code": "LAS"},
+                            "arrival_airport": {"code": "DEN"},
                             "departure_time": "2026-11-01T08:30:00",
-                            "arrival_time": "2026-11-01T08:47:00",
-                            "duration": 77,
+                            "arrival_time": "2026-11-01T10:00:00",
+                            "duration": 90,
                             "airline": {"name": "Frontier Airlines"},
                             "flight_number": "1019",
+                        },
+                        {
+                            "departure_airport": {"code": "DEN"},
+                            "arrival_airport": {"code": "LAS"},
+                            "departure_time": "2026-11-01T11:00:00",
+                            "arrival_time": "2026-11-01T13:30:00",
+                            "duration": 150,
+                            "airline": {"name": "Frontier Airlines"},
+                            "flight_number": "2027",
+                        }
+                    ],
+                    "layovers": [
+                        {
+                            "airport": {"code": "DEN"},
+                            "duration": 60,
+                            "overnight": False,
+                            "change_of_airport": False,
                         }
                     ],
                 },
@@ -91,7 +108,12 @@ def test_exact_date_search_renders_real_itinerary_fields(monkeypatch):
     app.button[0].click().run()
 
     assert not app.exception
-    rendered = "\n".join(markdown.value for markdown in app.markdown)
+    rendered = "\n".join(
+        [*(markdown.value for markdown in app.markdown), *(html.value for html in app.html)]
+    )
     assert "US$ 206" in rendered
     assert "Frontier Airlines" in rendered
     assert "PHX" in rendered and "LAS" in rendered
+    assert "fh-proportional-timeline" in rendered
+    assert "left:30%;width:20%" in rendered
+    assert "Chegada 10:00 · Saída 11:00" in rendered
