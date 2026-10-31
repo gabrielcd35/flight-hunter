@@ -68,10 +68,11 @@ with st.form("search"):
         custom_origin = st.text_input("Outro aeroporto de origem (opcional)", placeholder="Ex.: CNF", max_chars=3, help="Digite o código IATA de três letras. Quando preenchido, substitui a origem escolhida na lista.")
         budget = st.number_input("Orçamento máximo (USD)", min_value=20, max_value=20000, value=500, step=25)
     with b:
-        start = st.date_input("Primeira data de ida (MM/DD/YYYY)", value=date.today() + timedelta(days=20), min_value=date.today(), format="MM/DD/YYYY")
+        date_mode = st.selectbox("Como escolher a ida?", ["Data exata (inclusive hoje)", "Datas flexíveis"], help="Data exata pesquisa apenas a data escolhida. Datas flexíveis compara vários dias de partida.")
+        start = st.date_input("Data de ida (MM/DD/YYYY)", value=date.today(), min_value=date.today(), format="MM/DD/YYYY")
         trip_duration = st.number_input("Duração da viagem (dias)", min_value=1, max_value=30, value=3)
     with c:
-        window = st.slider("Flexibilidade da data de partida (dias)", min_value=3, max_value=14, value=7, help="Quantos dias consecutivos o Flight Hunter deve pesquisar, começando na Primeira data de ida. Exemplo: se escolher 11/15/2026 e 7 dias, ele pesquisa saídas de 11/15 até 11/21. A duração da viagem determina a data de volta para cada saída.")
+        window = st.slider("Flexibilidade da data de partida (dias)", min_value=1, max_value=14, value=7, disabled=(date_mode == "Data exata (inclusive hoje)"), help="Com Data exata, a pesquisa considera somente o dia escolhido. Com Datas flexíveis, escolhe quantos dias consecutivos pesquisar a partir da data de ida.")
         selected = st.multiselect("Destinos (pesquise por cidade ou aeroporto)", list(AIRPORTS), default=[f"{name} ({code})" for name, code in list(DESTINATIONS.items())[:5]], max_selections=8, help="Digite uma cidade como Belo Horizonte, Lisboa ou Tokyo; selecione o aeroporto correto entre os resultados.")
         custom_destinations = st.text_input("Outros destinos por código (opcional)", placeholder="Ex.: NRT, BSB, AKL", help="Separe códigos IATA de três letras por vírgula. Até 8 destinos no total, contando os da lista.")
         stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"])
@@ -177,7 +178,7 @@ if submitted or st.session_state.get("last_search"):
     else:
         stop_code = {"Qualquer voo": "ANY", "Somente direto": "0", "Até 1 escala": "1"}[stop_filter]
         first_day = start.isoformat()
-        last_day = (start + timedelta(days=window - 1)).isoformat()
+        last_day = (start + timedelta(days=(window - 1 if date_mode == "Datas flexíveis" else 0))).isoformat()
         status = st.empty()
         progress = st.progress(0)
         results, errors = [], []
