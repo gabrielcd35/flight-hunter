@@ -82,7 +82,8 @@ ORIGIN_OPTIONS = {
 }
 st.info("Escolha uma cidade para incluir os aeroportos apresentados entre parênteses, ou escolha um aeroporto específico. A busca por cidade compara os aeroportos disponíveis, quando compatíveis com o motor.")
 departure_flexible = st.checkbox("Flexibilidade na ida", help="Ative para pesquisar antes e/ou depois da data escolhida.")
-return_flexible = st.checkbox("Flexibilidade na volta", help="Ative para pesquisar antes e/ou depois da data de volta.")
+return_mode = st.radio("Como escolher a volta?", ["Data de volta", "Duração da viagem"], horizontal=True)
+return_flexible = st.checkbox("Flexibilidade na volta", help="Ative para pesquisar antes e/ou depois da data escolhida.") if return_mode == "Data de volta" else False
 stop_filter = st.selectbox("Escalas", ["Qualquer voo", "Somente direto", "Até 1 escala"], help="Selecione Somente direto para ocultar opções de conexão.")
 with st.form("search"):
     a, b, c = st.columns(3)
@@ -91,7 +92,6 @@ with st.form("search"):
         budget = st.number_input("Orçamento máximo (USD)", min_value=20, max_value=20000, value=500, step=25)
     with b:
         start = st.date_input("Data de ida (MM/DD/YYYY)", value=date.today(), min_value=date.today(), format="MM/DD/YYYY")
-        return_mode = st.radio("Como escolher a volta?", ["Data de volta", "Duração da viagem"], horizontal=True, help="Escolha a data exata de volta ou use duração fixa para encontrar preços flexíveis.")
         if return_mode == "Data de volta":
             returning = st.date_input("Data de volta (MM/DD/YYYY)", value=date.today() + timedelta(days=3), min_value=date.today(), format="MM/DD/YYYY")
             trip_duration = None
