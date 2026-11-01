@@ -8,6 +8,9 @@ from typing import Any
 
 
 SEARCH_TIMEOUT_SECONDS = 150
+DEFAULT_COUNTRY = "US"
+DEFAULT_CURRENCY = "USD"
+DEFAULT_LANGUAGE = "en"
 
 
 def _run_fli(command: list[str]) -> tuple[dict[str, Any] | None, str | None]:
@@ -43,6 +46,20 @@ def _append_layover_limit(command: list[str], layover_minutes: int | None) -> No
         command.extend(["--max-layover", str(layover_minutes)])
 
 
+def _append_locale(command: list[str]) -> None:
+    """Pin the reference search to an explicit, auditable point of sale."""
+    command.extend(
+        [
+            "--currency",
+            DEFAULT_CURRENCY,
+            "--language",
+            DEFAULT_LANGUAGE,
+            "--country",
+            DEFAULT_COUNTRY,
+        ]
+    )
+
+
 def search_calendar(
     origin: str,
     destination: str,
@@ -72,6 +89,7 @@ def search_calendar(
         stop_code,
     ]
     _append_layover_limit(command, layover_minutes)
+    _append_locale(command)
     payload, error = _run_fli(command)
     if error or payload is None:
         return None, error
@@ -106,6 +124,7 @@ def search_specific_flights(
         "json",
     ]
     _append_layover_limit(command, layover_minutes)
+    _append_locale(command)
     payload, error = _run_fli(command)
     if error or payload is None:
         return [], error
@@ -134,4 +153,3 @@ def cheapest_specific_flight(
     if error:
         return None, error
     return min(flights, key=lambda item: item["price"]), None
-
