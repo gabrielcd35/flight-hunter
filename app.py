@@ -26,7 +26,12 @@ from flight_hunter.core import (
 from flight_hunter.search import cheapest_specific_flight, search_calendar, search_specific_flights
 from flight_hunter.theme import APP_CSS
 from flight_hunter.timeline import SegmentTimeline, build_segment_timeline
-from flight_hunter.market_compare import MARKETS, compare_markets
+from flight_hunter.market_compare import (
+    MARKETS,
+    compare_markets,
+    comparison_signature,
+    same_itinerary_spread,
+)
 
 
 st.set_page_config(
@@ -837,6 +842,15 @@ if saved:
                 key="market_countries",
             )
             st.caption("Uma consulta por país. Recomenda-se começar com 2 ou 3 mercados.")
+            current_comparison_signature = comparison_signature(
+                saved["origin"],
+                compare_selected["code"],
+                compare_selected["departure_date"],
+                compare_selected["return_date"],
+                saved["stop_code"],
+                markets,
+                compare_selected.get("itinerary"),
+            )
             if st.button("Comparar preços internacionais", key="market_button", disabled=not markets):
                 with st.spinner("Consultando tarifas por país..."):
                     rows, issues = compare_markets(
@@ -846,12 +860,12 @@ if saved:
                         compare_selected.get("itinerary"),
                     )
                 st.session_state["market_comparison"] = {
-                    "route": compare_label, "markets": tuple(markets),
+                    "signature": current_comparison_signature,
                     "rows": rows, "issues": issues,
-                    "has_reference": bool(compare_selected.get("itinerary")),
+                    "has_reference": current_comparison_signature[-1] is not None,
                 }
             saved_compare = st.session_state.get("market_comparison")
-            if saved_compare and saved_compare["route"] == compare_label and saved_compare["markets"] == tuple(markets):
+            if saved_compare and saved_compare.get("signature") == current_comparison_signature:
                 rows = saved_compare["rows"]
                 if rows:
                     st.dataframe(
@@ -859,11 +873,14 @@ if saved:
                         hide_index=True, use_container_width=True
                     )
                     if saved_compare["has_reference"]:
-                        matches = [r for r in rows if r["Mesmo itinerário (USD)"] is not None]
-                        if len(matches) >= 2:
-                            highest = max(r["Mesmo itinerário (USD)"] for r in matches)
-                            lowest = min(r["Mesmo itinerário (USD)"] for r in matches)
-                            st.metric("Diferença observada no mesmo itinerário", f"US$ {highest - lowest:,.2f}")
+                        spread = same_itinerary_spread(rows)
+                        if spread is not None:
+                            st.metric("Diferença observada no mesmo itinerário", f"US$ {spread:,.2f}")
+                            if spread == 0:
+                                st.caption(
+                                    "Preços idênticos são um resultado válido: confirmam que estes mercados "
+                                    "responderam com o mesmo valor, não que a configuração de país foi ignorada."
+                                )
                         else:
                             st.info("Não encontramos o mesmo itinerário em dois mercados. Os preços mínimos não são diretamente comparáveis.")
                     else:

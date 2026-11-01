@@ -9,6 +9,12 @@ def completed(payload, returncode=0, stderr=""):
     return SimpleNamespace(returncode=returncode, stdout=json.dumps(payload), stderr=stderr)
 
 
+def assert_us_locale(command):
+    assert command[command.index("--currency") + 1] == "USD"
+    assert command[command.index("--language") + 1] == "en"
+    assert command[command.index("--country") + 1] == "US"
+
+
 def test_calendar_search_preserves_filters_and_selects_cheapest(monkeypatch):
     captured = {}
 
@@ -31,15 +37,19 @@ def test_calendar_search_preserves_filters_and_selects_cheapest(monkeypatch):
     assert error is None
     assert result["price"] == 180
     assert captured["command"][:4] == ["fli", "dates", "PHX", "LAX"]
-    assert captured["command"][-2:] == ["--max-layover", "240"]
+    assert ["--max-layover", "240"] == captured["command"][
+        captured["command"].index("--max-layover") : captured["command"].index("--max-layover") + 2
+    ]
+    assert_us_locale(captured["command"])
     assert captured["kwargs"]["timeout"] == 150
 
 
 def test_specific_search_returns_only_priced_itineraries(monkeypatch):
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: completed(
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return completed(
             {
                 "success": True,
                 "flights": [
@@ -47,11 +57,13 @@ def test_specific_search_returns_only_priced_itineraries(monkeypatch):
                     {"price": 315, "outbound": {}, "return": {}},
                 ],
             }
-        ),
-    )
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
     flights, error = search_specific_flights("PHX", "JFK", "2026-11-02", "2026-11-06", "0", None)
     assert error is None
     assert flights == [{"price": 315, "outbound": {}, "return": {}}]
+    assert_us_locale(captured["command"])
 
 
 def test_search_reports_process_and_timeout_errors(monkeypatch):
@@ -71,4 +83,3 @@ def test_search_reports_process_and_timeout_errors(monkeypatch):
     flights, error = search_specific_flights("PHX", "LAS", "2026-11-02", "2026-11-05", "ANY", None)
     assert flights == []
     assert "demorou" in error
-
