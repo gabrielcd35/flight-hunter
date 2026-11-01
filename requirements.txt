@@ -1,4 +1,4 @@
 streamlit>=1.38,<2
 click>=8
-flights @ https://github.com/punitarani/fli/archive/refs/heads/main.zip
+flights @ https://github.com/punitarani/fli/archive/881aee5ff4321e81ea2157cb44be94ce6a21dc1b.zip
 airportsdata>=20241001
